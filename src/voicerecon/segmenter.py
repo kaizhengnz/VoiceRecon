@@ -1,0 +1,152 @@
+"""Segmentation logic: turn per-stream audio + VAD events into cut segments.
+
+Two conditions cut a segment (whichever hits first):
+
+1. **Silence threshold** on the currently active stream — surfaces as an
+   ``end`` event from that stream's :class:`voicerecon.vad.StreamVAD`
+   (which has ``min_silence_duration_ms`` set to the configured value).
+2. **Speaker change** — the *other* stream emits a ``start`` event while
+   this stream still has an open segment. That other stream's speech
+   preempts the current speaker; the current segment is cut immediately.
+
+Buffered audio between the ``start`` and the cut is collected in a list
+of numpy blocks; the caller (runner) reassembles it into one array and
+sends it to STT.
+
+The segmenter is thread-safe: two audio threads call
+:meth:`process_events` concurrently, and the main thread consumes
+:attr:`ready_segments`. Access is serialized by an internal lock.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections import deque
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from . import vad
+
+
+@dataclass
+class PendingSegment:
+    """State per stream for the currently-being-collected segment."""
+
+    speaker: str
+    started_at: float | None = None
+    blocks: list[np.ndarray] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.started_at is not None
+
+    def append_audio(self, samples: np.ndarray) -> None:
+        if self.active and samples.size:
+            self.blocks.append(samples)
+
+    def start(self, timestamp: float) -> None:
+        self.started_at = timestamp
+        self.blocks = []
+
+    def cut(self, ended_at: float) -> ReadySegment | None:
+        if not self.active:
+            return None
+        audio = _concat_blocks(self.blocks)
+        started = self.started_at or ended_at
+        self.started_at = None
+        self.blocks = []
+        if audio.size == 0:
+            return None
+        return ReadySegment(
+            speaker=self.speaker,
+            audio=audio,
+            started_at=started,
+            ended_at=ended_at,
+        )
+
+
+@dataclass
+class ReadySegment:
+    """One utterance ready for STT. Audio is float32 mono at 16 kHz."""
+
+    speaker: str
+    audio: np.ndarray
+    started_at: float
+    ended_at: float
+
+
+def _concat_blocks(blocks: Iterable[np.ndarray]) -> np.ndarray:
+    if not blocks:
+        return np.empty(0, dtype=np.float32)
+    return np.concatenate(list(blocks)).astype(np.float32, copy=False)
+
+
+class Segmenter:
+    """Owns the per-stream state and the ready-segment queue."""
+
+    OTHER = {"me": "them", "them": "me"}
+
+    def __init__(self) -> None:
+        self._pending: dict[str, PendingSegment] = {
+            "me": PendingSegment("me"),
+            "them": PendingSegment("them"),
+        }
+        self._ready: deque[ReadySegment] = deque()
+        self._lock = threading.Lock()
+
+    def on_audio(self, speaker: str, samples: np.ndarray) -> None:
+        """Push audio for the currently-active segment on ``speaker``.
+
+        Silent audio (before a ``start`` event on this stream) is dropped.
+        """
+        with self._lock:
+            self._pending[speaker].append_audio(samples)
+
+    def on_events(self, speaker: str, events: Iterable[vad.SpeechEvent]) -> None:
+        """Feed VAD events for ``speaker``.
+
+        A ``start`` from the other stream preempts the current speaker (the
+        preempted segment is emitted immediately). An ``end`` cuts the
+        current speaker's segment. Multiple events in one call are handled
+        in order.
+        """
+        with self._lock:
+            for event in events:
+                if event.kind == "start":
+                    self._handle_start(speaker, event.timestamp)
+                elif event.kind == "end":
+                    self._handle_end(speaker, event.timestamp)
+
+    def _handle_start(self, speaker: str, timestamp: float) -> None:
+        other = self.OTHER[speaker]
+        other_pending = self._pending[other]
+        if other_pending.active:
+            cut = other_pending.cut(timestamp)
+            if cut is not None:
+                self._ready.append(cut)
+        self._pending[speaker].start(timestamp)
+
+    def _handle_end(self, speaker: str, timestamp: float) -> None:
+        cut = self._pending[speaker].cut(timestamp)
+        if cut is not None:
+            self._ready.append(cut)
+
+    def drain(self) -> list[ReadySegment]:
+        """Pop every segment that is ready right now."""
+        with self._lock:
+            items = list(self._ready)
+            self._ready.clear()
+        return items
+
+    def flush(self, timestamp: float) -> list[ReadySegment]:
+        """Cut whatever is still open (used on graceful shutdown)."""
+        with self._lock:
+            for pending in self._pending.values():
+                cut = pending.cut(timestamp)
+                if cut is not None:
+                    self._ready.append(cut)
+            items = list(self._ready)
+            self._ready.clear()
+        return items
