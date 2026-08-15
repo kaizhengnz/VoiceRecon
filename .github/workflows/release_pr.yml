@@ -1,0 +1,75 @@
+name: Open release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version segment to bump (default: patch. minor/major means you are consciously bumping the 0.1 prefix.)"
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  open-release-pr:
+    name: Open release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write  # needed for `gh workflow run` to dispatch release_auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bump __version__
+        id: bump
+        run: python scripts/bump_version.py ${{ inputs.bump }}
+      - name: Sync Document version in design doc
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          sed -i "s/^| Document version | .* |/| Document version | ${NEW_VERSION} |/" docs/VoiceRecon_Design.md
+      - name: Commit on release branch and push
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Delete any leftover release branch from a previous half-completed
+          # run so a retry is not blocked by "remote branch already exists".
+          git push origin --delete "release/v${NEW_VERSION}" 2>/dev/null || true
+          git checkout -b "release/v${NEW_VERSION}"
+          git add src/voicerecon/__init__.py docs/VoiceRecon_Design.md
+          git commit -m "chore: release v${NEW_VERSION}"
+          git push -u origin "release/v${NEW_VERSION}"
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "release/v${NEW_VERSION}" \
+            --title "chore: release v${NEW_VERSION}" \
+            --body "Automated release bump for v${NEW_VERSION}. Merged synchronously by the workflow; publish runs on the merge commit via release_auto.yml."
+      - name: Merge the release PR synchronously
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        # `gh pr merge --squash` (no --auto) blocks until the merge completes,
+        # so the next step's `gh workflow run` fires against a `main` that
+        # already contains the release commit.
+        run: gh pr merge --squash --delete-branch "release/v${NEW_VERSION}"
+      - name: Trigger release_auto on the new main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # GitHub suppresses push-triggered workflows when the push comes from
+        # GITHUB_TOKEN, so release_auto would not fire on the merge above.
+        # workflow_dispatch is exempted, so this reliably chains through.
+        run: gh workflow run release_auto.yml --ref main

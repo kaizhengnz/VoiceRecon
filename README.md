@@ -23,7 +23,7 @@ Both modes segment audio when either:
 pip install voicerecon
 ```
 
-Requires Python 3.10+. First run downloads the Whisper model (~250 MB for the default `small` size) into your Hugging Face cache; subsequent runs use it directly.
+Requires Python 3.10+. Depends on PyTorch (pulled in transitively by `silero-vad`), so expect a substantial install. First run also downloads the Whisper model into your Hugging Face cache; subsequent runs use it directly.
 
 ### macOS extra step: BlackHole
 
