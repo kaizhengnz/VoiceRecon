@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Project | VoiceRecon |
-| Document version | 0.1.0 |
+| Document version | 0.1.1 |
 | Date | 2026-08-15 |
 | Status | Alpha (MVP) |
 | Audience | Contributors and integrators |
