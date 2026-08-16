@@ -204,7 +204,7 @@ def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
 MAX_PROMPT_RETRIES = 5
 
 
-def _ask(label: str, current: Any, *, secret: bool = False) -> str:
+def _ask(label: str, current: Any, *, secret: bool = False, empty_hint: str = "empty") -> str:
     """Prompt for one value. Enter keeps the current value.
 
     ``secret=True`` does *not* hide characters during typing — API keys,
@@ -218,7 +218,7 @@ def _ask(label: str, current: Any, *, secret: bool = False) -> str:
     """
     has_current = current is not None and str(current) != ""
     if not has_current:
-        hint = "empty"
+        hint = empty_hint
     elif secret:
         hint = ui.mask(str(current))
     else:
@@ -311,10 +311,9 @@ def _ask_device(
         for line in audio.format_device_lines(names, default_name):
             ui.info(f"     {line}")
 
-    keep = "Enter keeps it, 0 for the system default" if current else "Enter for the default"
-    prompt = f"  {label} (number, name, {keep})"
+    prompt = f"  {label} (0 = system default)" if current else f"  {label}"
     for _ in range(MAX_PROMPT_RETRIES):
-        answer = _ask(prompt, current).strip()
+        answer = _ask(prompt, current, empty_hint="system default").strip()
         if answer == current:
             # Enter kept the stored value; never re-read it as a list index.
             return answer
@@ -372,19 +371,20 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     ui.info("\n3) Whisper model size")
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
-    ui.info("\n4) Audio devices (Enter = auto-detect defaults)")
+    ui.info("\n4) Audio devices — two streams are recorded at once")
+    ui.info("   Answer each with a number from the list, a device name, or Enter for the default.")
     devices = audio.enumerate_devices()
     if not devices["input"] and not devices["loopback"]:
         ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
     cfg["input_device"] = _ask_device(
-        "microphone",
+        "your own voice — microphone",
         "Microphones detected",
         devices["input"],
         devices["default_input"],
         str(cfg["input_device"]),
     )
     cfg["loopback_device"] = _ask_device(
-        "loopback / system audio",
+        "the other party — speaker the sound comes out of",
         "Loopback / system-audio devices detected",
         devices["loopback"],
         devices["default_loopback"],

@@ -161,6 +161,13 @@ def test_ask_device_takes_a_digit_as_a_name_when_nothing_was_detected(monkeypatc
     assert config._ask_device("microphone", "Microphones", [], "", "") == "2"
 
 
+def test_ask_device_hints_the_system_default_when_unset(monkeypatch):
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    config._ask_device("your own voice", "Microphones", DEVICES, "Webcam Mic", "")
+    assert "[system default]" in prompts[0]
+
+
 def test_ask_device_lists_the_default_marker(monkeypatch, capsys):
     _answer(monkeypatch, "")
     config._ask_device("microphone", "Microphones", DEVICES, "Headset Mic", "")
