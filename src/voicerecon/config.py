@@ -311,7 +311,8 @@ def _ask_device(
         for line in audio.format_device_lines(names, default_name):
             ui.info(f"     {line}")
 
-    prompt = f"  {label} (0 = system default)" if current else f"  {label}"
+    note = "pattern match supported, 0 = system default" if current else "pattern match supported"
+    prompt = f"  {label} ({note})"
     for _ in range(MAX_PROMPT_RETRIES):
         answer = _ask(prompt, current, empty_hint="system default").strip()
         if answer == current:
@@ -372,19 +373,18 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
     ui.info("\n4) Audio devices — pick what gets transcribed")
-    ui.info("   Give an index from the list or a device name; partial names match.")
     devices = audio.enumerate_devices()
     if not devices["input"] and not devices["loopback"]:
         ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
     cfg["input_device"] = _ask_device(
-        "Microphone index or name",
+        "Input Microphone index or name",
         "Microphones detected",
         devices["input"],
         devices["default_input"],
         str(cfg["input_device"]),
     )
     cfg["loopback_device"] = _ask_device(
-        "Audio device index or name",
+        "Input Audio Device index or name",
         "Loopback / system-audio devices detected",
         devices["loopback"],
         devices["default_loopback"],
