@@ -77,6 +77,8 @@ The design goals mirror ScreenRecon:
 
 STT is synchronous on the main thread on purpose. Running Whisper concurrently on multiple segments blows up CPU / RAM and interleaves partial output; queueing them keeps the pipeline predictable.
 
+`Transcriber` resolves its backend on first use: `cuda` when CTranslate2 reports a visible CUDA device, `cpu` otherwise. The compute type follows the resolved device — `float16` on GPU, `int8` on CPU — rather than faster-whisper's own `auto`, because on Blackwell (RTX 50-series) `auto` selects an int8 variant and every int8 CUDA path fails with `CUBLAS_STATUS_NOT_SUPPORTED`. Both parameters stay overridable by the caller for anyone who needs to pin them.
+
 ## 4. Segmentation rules
 
 An utterance ends when *either* of:
@@ -126,3 +128,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | Date | Version | Change |
 | --- | --- | --- |
 | 2026-08-15 | 0.1.0 | Initial design and MVP implementation |
+| 2026-08-16 | 0.1.3 | Transcription runs on a CUDA GPU when one is visible, with float16 on GPU and int8 on CPU |
