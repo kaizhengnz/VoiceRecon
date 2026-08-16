@@ -161,24 +161,63 @@ def _pick_loopback(sc: Any, device_name: str | None) -> Any:
     return sc.get_microphone(default_speaker.name, include_loopback=True)
 
 
-def enumerate_devices() -> dict[str, list[str]]:
+def enumerate_devices() -> dict[str, Any]:
     """List currently visible input and loopback device names.
+
+    Keys: ``input`` and ``loopback`` hold the name lists, ``default_input``
+    and ``default_loopback`` name the entry an empty config field resolves
+    to (the same choices :func:`_soundcard_recorder` and
+    :func:`_pick_loopback` make), or ``""`` when that cannot be determined.
 
     Used by ``--configure`` and the ``--show-devices`` diagnostic to help
     the user pick the right one. Never raises: import / query failures
-    yield an empty list rather than crashing the wizard.
+    yield empty values rather than crashing the wizard.
     """
+    empty: dict[str, Any] = {
+        "input": [],
+        "loopback": [],
+        "default_input": "",
+        "default_loopback": "",
+    }
     try:
         import soundcard as sc  # type: ignore[import-not-found]
     except ImportError:
-        return {"input": [], "loopback": []}
+        return empty
 
     try:
         mics = sc.all_microphones(include_loopback=False)
         loopbacks = sc.all_microphones(include_loopback=True)
     except Exception:
-        return {"input": [], "loopback": []}
+        return empty
 
     mic_names = [m.name for m in mics]
     loopback_names = [m.name for m in loopbacks if m.name not in mic_names]
-    return {"input": mic_names, "loopback": loopback_names}
+    return {
+        "input": mic_names,
+        "loopback": loopback_names,
+        "default_input": _default_device_name(sc.default_microphone),
+        "default_loopback": _default_device_name(sc.default_speaker),
+    }
+
+
+def _default_device_name(getter: Callable[[], Any]) -> str:
+    """Name reported by a soundcard default-device getter, ``""`` on failure.
+
+    A machine with no default recording device raises rather than returning
+    None, and that must not take the whole listing down.
+    """
+    try:
+        return str(getter().name)
+    except Exception:
+        return ""
+
+
+def format_device_lines(names: list[str], default_name: str) -> list[str]:
+    """Numbered display lines, marking the entry blank input resolves to.
+
+    Shared by the wizard and ``--show-devices`` so both number the same way.
+    """
+    return [
+        f"{index}) {name}" + ("  — default" if name == default_name else "")
+        for index, name in enumerate(names, start=1)
+    ]

@@ -129,3 +129,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | --- | --- |
 | 2026-08-15 | Initial design and MVP implementation |
 | 2026-08-16 | Transcription runs on a CUDA GPU when one is visible, with float16 on GPU and int8 on CPU |
+| 2026-08-16 | Device listings are numbered and mark the default, and the setup wizard accepts a number as well as a name |

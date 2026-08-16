@@ -294,18 +294,31 @@ def _ask_whisper_size(current: str) -> str:
     return _ask_choice("model size", presets, current, default=DEFAULT_WHISPER_SIZE)
 
 
-def _show_devices() -> None:
-    devices = audio.enumerate_devices()
-    if devices["input"]:
-        ui.info("   Microphones detected:")
-        for name in devices["input"]:
-            ui.info(f"     - {name}")
-    if devices["loopback"]:
-        ui.info("   Loopback / system-audio devices detected:")
-        for name in devices["loopback"]:
-            ui.info(f"     - {name}")
-    if not devices["input"] and not devices["loopback"]:
-        ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
+def _ask_device(
+    label: str, heading: str, names: list[str], default_name: str, current: str
+) -> str:
+    """Prompt for one audio device, listing the detected ones by number.
+
+    A number picks from the list, any other text is stored as-is (soundcard
+    matches names loosely, and macOS users type ``BlackHole 2ch``), and
+    blank keeps the current value — empty meaning "follow whatever the
+    system default is at capture time" rather than pinning today's name.
+    """
+    if names:
+        ui.info(f"   {heading}:")
+        for line in audio.format_device_lines(names, default_name):
+            ui.info(f"     {line}")
+
+    prompt = f"  {label} (number, name, or Enter for default)"
+    for _ in range(MAX_PROMPT_RETRIES):
+        answer = _ask(prompt, current).strip()
+        if not names or not answer.isdigit():
+            return answer
+        number = int(answer)
+        if 1 <= number <= len(names):
+            return names[number - 1]
+        ui.warn(f"{label}: enter 1-{len(names)} or a device name, please try again.")
+    raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
 def run_wizard(path: str | os.PathLike[str] | None = None) -> int:
@@ -352,10 +365,22 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
     ui.info("\n4) Audio devices (Enter = auto-detect defaults)")
-    _show_devices()
-    cfg["input_device"] = _ask("  microphone (blank = default)", cfg["input_device"])
-    cfg["loopback_device"] = _ask(
-        "  loopback / system audio (blank = default)", cfg["loopback_device"]
+    devices = audio.enumerate_devices()
+    if not devices["input"] and not devices["loopback"]:
+        ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
+    cfg["input_device"] = _ask_device(
+        "microphone",
+        "Microphones detected",
+        devices["input"],
+        devices["default_input"],
+        str(cfg["input_device"]),
+    )
+    cfg["loopback_device"] = _ask_device(
+        "loopback / system audio",
+        "Loopback / system-audio devices detected",
+        devices["loopback"],
+        devices["default_loopback"],
+        str(cfg["loopback_device"]),
     )
 
     ui.info(
