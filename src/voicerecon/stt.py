@@ -4,6 +4,10 @@ The model is loaded lazily on the first :meth:`transcribe` call: the
 download and CTranslate2 init cost several seconds, and paying it during
 ``--help`` / ``--configure`` is user-hostile.
 
+The model runs on a CUDA GPU when one is visible and on the CPU otherwise;
+:meth:`Transcriber._resolve_backend` owns that choice, including the compute
+type, which cannot be left to faster-whisper's own ``auto`` (see there).
+
 Auto language detection is on by default; each utterance is transcribed
 independently, so a session that switches languages mid-way is handled per
 segment (Whisper decides on each first frame). The detected language is
@@ -22,6 +26,19 @@ DEFAULT_MODEL_SIZE = "small"
 weaker on non-English speech; ``medium`` is more accurate but 3× the size."""
 
 
+def _cuda_device_count() -> int:
+    """Visible CUDA devices, or 0 when CTranslate2 cannot see any.
+
+    Wrapped so a broken driver install degrades to CPU instead of killing
+    transcription, and so tests can substitute it without a GPU.
+    """
+    try:
+        import ctranslate2  # type: ignore[import-not-found]
+        return int(ctranslate2.get_cuda_device_count())
+    except Exception:
+        return 0
+
+
 class Transcriber:
     """Wraps a WhisperModel and offers one method: :meth:`transcribe`.
 
@@ -33,11 +50,16 @@ class Transcriber:
         self,
         model_size: str = DEFAULT_MODEL_SIZE,
         *,
-        device: str = "cpu",
-        compute_type: str = "int8",
+        device: str = "auto",
+        compute_type: str | None = None,
         model_factory: Callable[..., Any] | None = None,
     ) -> None:
-        """``model_factory`` is a seam for tests: a callable returning any
+        """``device`` ``"auto"`` picks ``cuda`` when a CUDA device is visible
+        and ``cpu`` otherwise; ``compute_type`` ``None`` then follows from the
+        resolved device (see :meth:`_resolve_backend`). Both can be pinned by
+        the caller.
+
+        ``model_factory`` is a seam for tests: a callable returning any
         object with a ``.transcribe(audio, language=None, ...)`` method.
         Production leaves it ``None`` and faster-whisper is loaded lazily."""
         self._model_size = model_size
@@ -46,17 +68,33 @@ class Transcriber:
         self._factory = model_factory
         self._model: Any | None = None
 
+    def _resolve_backend(self) -> tuple[str, str]:
+        """Resolve ``("auto", None)`` into a concrete device + compute type.
+
+        ``float16`` is the GPU default rather than letting faster-whisper
+        choose: its own ``auto`` picks an int8 variant on Blackwell, and every
+        int8 CUDA path there fails with ``CUBLAS_STATUS_NOT_SUPPORTED``.
+        """
+        device = self._device
+        if device == "auto":
+            device = "cuda" if _cuda_device_count() > 0 else "cpu"
+        compute_type = self._compute_type
+        if compute_type is None:
+            compute_type = "float16" if device == "cuda" else "int8"
+        return device, compute_type
+
     def _ensure_model(self) -> Any:
         if self._model is not None:
             return self._model
+        device, compute_type = self._resolve_backend()
         if self._factory is not None:
             self._model = self._factory(
-                self._model_size, device=self._device, compute_type=self._compute_type
+                self._model_size, device=device, compute_type=compute_type
             )
             return self._model
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
         self._model = WhisperModel(
-            self._model_size, device=self._device, compute_type=self._compute_type
+            self._model_size, device=device, compute_type=compute_type
         )
         return self._model
 

@@ -25,6 +25,8 @@ pip install voicerecon
 
 Requires Python 3.10+. Depends on PyTorch (pulled in transitively by `silero-vad`), so expect a substantial install. First run also downloads the Whisper model into your Hugging Face cache; subsequent runs use it directly.
 
+Transcription uses a CUDA GPU automatically when one is visible, and falls back to the CPU otherwise. No configuration either way.
+
 ### macOS extra step: BlackHole
 
 macOS does not expose system audio to third-party apps. To capture the other party's voice in a meeting:
