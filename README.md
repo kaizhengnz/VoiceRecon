@@ -11,7 +11,7 @@ Status: **alpha**. MVP is Windows-first; macOS works if you install BlackHole; L
 Two modes, picked at launch:
 
 1. **Transcript-only** (default — no flag). Writes a plain-text transcript file under your save directory. Nothing goes to the cloud. Useful for recording meetings you want to search later.
-2. **AI-per-segment** (`--listen <preset>`). Same transcript, plus each completed utterance is sent to Claude with a preset-specific system prompt; the response goes to Telegram.
+2. **AI-per-segment** (`--listen <preset>`). Same transcript, plus each completed utterance is sent to the AI with a preset-specific system prompt; the response goes to Telegram.
 
 Both modes segment audio when either:
 - silence exceeds the configured threshold (`speech_silence_seconds`, default 1.5 s), or
