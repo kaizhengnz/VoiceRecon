@@ -299,19 +299,27 @@ def _ask_device(
 ) -> str:
     """Prompt for one audio device, listing the detected ones by number.
 
-    A number picks from the list, any other text is stored as-is (soundcard
-    matches names loosely, and macOS users type ``BlackHole 2ch``), and
-    blank keeps the current value — empty meaning "follow whatever the
-    system default is at capture time" rather than pinning today's name.
+    A number picks from the list, ``0`` clears a pinned device back to the
+    system default, and any other text is stored as-is (soundcard matches
+    names loosely, and macOS gets no loopback list at all, so BlackHole has
+    to be typed). Enter keeps the current value; empty means "follow
+    whatever the system default is at capture time" rather than pinning
+    today's name.
     """
     if names:
         ui.info(f"   {heading}:")
         for line in audio.format_device_lines(names, default_name):
             ui.info(f"     {line}")
 
-    prompt = f"  {label} (number, name, or Enter for default)"
+    keep = "Enter keeps it, 0 for the system default" if current else "Enter for the default"
+    prompt = f"  {label} (number, name, {keep})"
     for _ in range(MAX_PROMPT_RETRIES):
         answer = _ask(prompt, current).strip()
+        if answer == current:
+            # Enter kept the stored value; never re-read it as a list index.
+            return answer
+        if answer == "0":
+            return ""
         if not names or not answer.isdigit():
             return answer
         number = int(answer)

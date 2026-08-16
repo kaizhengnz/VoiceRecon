@@ -138,6 +138,18 @@ def test_ask_device_blank_keeps_the_current_value(monkeypatch):
     assert chosen == "Headset Mic"
 
 
+def test_ask_device_zero_clears_a_pinned_device(monkeypatch):
+    _answer(monkeypatch, "0")
+    chosen = config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "Headset Mic")
+    assert chosen == ""
+
+
+def test_ask_device_keeps_a_digit_valued_current_as_a_name(monkeypatch):
+    """Enter on a stored "2" keeps "2"; it is not re-read as list index 2."""
+    _answer(monkeypatch, "")
+    assert config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "2") == "2"
+
+
 def test_ask_device_rejects_out_of_range_number(monkeypatch):
     _answer(monkeypatch, "9")
     with pytest.raises(config.WizardAborted, match="microphone"):

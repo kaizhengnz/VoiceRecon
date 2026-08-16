@@ -33,8 +33,8 @@ macOS does not expose system audio to third-party apps. To capture the other par
 
 1. Install [BlackHole 2ch](https://existential.audio/blackhole/) (free, ~30 s install).
 2. Open **Audio MIDI Setup**, create a **Multi-Output Device** that includes both your speakers and BlackHole, and set it as your system output. This lets you *hear* audio while also routing it to BlackHole.
-3. Run `voicerecon --show-devices` to confirm `BlackHole 2ch` appears.
-4. Run `voicerecon --configure` and pick `BlackHole 2ch` by its number when asked for the loopback device.
+3. Run `voicerecon --show-devices` to confirm `BlackHole 2ch` appears. macOS has no loopback devices at all, so it is listed under Microphones.
+4. Run `voicerecon --configure` and type `BlackHole 2ch` when asked for the loopback device — the loopback list is empty on macOS, so there is no number to pick.
 
 ## Usage
 
@@ -91,7 +91,7 @@ voicerecon --show
 }
 ```
 
-`input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by number, marks the one an empty field resolves to, and accepts either a number or a typed name.
+`input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by number, marks the one an empty field resolves to, and accepts either a number or a typed name; `0` clears a pinned device back to the system default.
 
 The three credential fields are only required when using `--listen <preset>`. Transcript-only mode works with them all empty.
 

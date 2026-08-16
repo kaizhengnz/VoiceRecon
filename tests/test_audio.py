@@ -37,14 +37,14 @@ def _install(monkeypatch, module: types.ModuleType) -> None:
     monkeypatch.setitem(sys.modules, "soundcard", module)
 
 
-def _hide_soundcard(monkeypatch) -> None:
-    """Make ``import soundcard`` fail the way a missing install does."""
+def _hide_soundcard(monkeypatch, error: Exception) -> None:
+    """Make ``import soundcard`` fail the way a broken install does."""
     monkeypatch.delitem(sys.modules, "soundcard", raising=False)
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
         if name == "soundcard":
-            raise ImportError("no module named soundcard")
+            raise error
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -83,6 +83,33 @@ def test_enumerate_survives_missing_default_device(monkeypatch):
     assert devices["default_input"] == ""
 
 
+def test_enumerate_matches_a_pulseaudio_monitor_to_its_sink(monkeypatch):
+    """PulseAudio names the monitor after the sink; the marker must still land."""
+    _install(
+        monkeypatch,
+        _fake_soundcard(
+            mics=["Webcam Mic"],
+            loopbacks=["Monitor of Built-in Audio"],
+            default_mic="Webcam Mic",
+            default_spk="Built-in Audio",
+        ),
+    )
+    assert audio.enumerate_devices()["default_loopback"] == "Monitor of Built-in Audio"
+
+
+def test_enumerate_leaves_loopback_default_empty_when_nothing_matches(monkeypatch):
+    _install(
+        monkeypatch,
+        _fake_soundcard(
+            mics=["BlackHole 2ch"],
+            loopbacks=[],
+            default_mic="BlackHole 2ch",
+            default_spk="MacBook Pro Speakers",
+        ),
+    )
+    assert audio.enumerate_devices()["default_loopback"] == ""
+
+
 def test_enumerate_survives_query_failure(monkeypatch):
     module = types.ModuleType("soundcard")
 
@@ -95,7 +122,13 @@ def test_enumerate_survives_query_failure(monkeypatch):
 
 
 def test_enumerate_survives_soundcard_absent(monkeypatch):
-    _hide_soundcard(monkeypatch)
+    _hide_soundcard(monkeypatch, ImportError("no module named soundcard"))
+    assert audio.enumerate_devices() == EMPTY
+
+
+def test_enumerate_survives_soundcard_import_raising_oserror(monkeypatch):
+    """No libpulse on Linux: the cffi dlopen raises OSError, not ImportError."""
+    _hide_soundcard(monkeypatch, OSError("cannot load library 'libpulse.so.0'"))
     assert audio.enumerate_devices() == EMPTY
 
 

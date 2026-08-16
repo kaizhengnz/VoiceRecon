@@ -181,7 +181,9 @@ def enumerate_devices() -> dict[str, Any]:
     }
     try:
         import soundcard as sc  # type: ignore[import-not-found]
-    except ImportError:
+    except Exception:
+        # Not just ImportError: on Linux the cffi dlopen of libpulse raises
+        # OSError when PulseAudio is not installed.
         return empty
 
     try:
@@ -192,11 +194,12 @@ def enumerate_devices() -> dict[str, Any]:
 
     mic_names = [m.name for m in mics]
     loopback_names = [m.name for m in loopbacks if m.name not in mic_names]
+    speaker_name = _default_device_name(sc.default_speaker)
     return {
         "input": mic_names,
         "loopback": loopback_names,
         "default_input": _default_device_name(sc.default_microphone),
-        "default_loopback": _default_device_name(sc.default_speaker),
+        "default_loopback": _default_loopback_name(speaker_name, loopback_names),
     }
 
 
@@ -210,6 +213,21 @@ def _default_device_name(getter: Callable[[], Any]) -> str:
         return str(getter().name)
     except Exception:
         return ""
+
+
+def _default_loopback_name(speaker_name: str, loopback_names: list[str]) -> str:
+    """Loopback entry that :func:`_pick_loopback` lands on for a blank field.
+
+    Windows names a speaker's loopback after the speaker itself, so the name
+    matches outright. PulseAudio calls it ``Monitor of <sink>``, which is
+    what soundcard's own substring match resolves ``<sink>`` to.
+    """
+    if not speaker_name or speaker_name in loopback_names:
+        return speaker_name
+    for name in loopback_names:
+        if speaker_name in name:
+            return name
+    return ""
 
 
 def format_device_lines(names: list[str], default_name: str) -> list[str]:
