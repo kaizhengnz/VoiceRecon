@@ -371,20 +371,20 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     ui.info("\n3) Whisper model size")
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
-    ui.info("\n4) Audio devices — two streams are recorded at once")
-    ui.info("   Answer each with a number from the list, a device name, or Enter for the default.")
+    ui.info("\n4) Audio devices — pick which devices get transcribed")
+    ui.info("   A number from the list or a device name both work; Enter takes the system default.")
     devices = audio.enumerate_devices()
     if not devices["input"] and not devices["loopback"]:
         ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
     cfg["input_device"] = _ask_device(
-        "your own voice — microphone",
+        "microphone to transcribe",
         "Microphones detected",
         devices["input"],
         devices["default_input"],
         str(cfg["input_device"]),
     )
     cfg["loopback_device"] = _ask_device(
-        "the other party — speaker the sound comes out of",
+        "system-audio device to transcribe",
         "Loopback / system-audio devices detected",
         devices["loopback"],
         devices["default_loopback"],
