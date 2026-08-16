@@ -204,7 +204,7 @@ def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
 MAX_PROMPT_RETRIES = 5
 
 
-def _ask(label: str, current: Any, *, secret: bool = False) -> str:
+def _ask(label: str, current: Any, *, secret: bool = False, empty_hint: str = "empty") -> str:
     """Prompt for one value. Enter keeps the current value.
 
     ``secret=True`` does *not* hide characters during typing — API keys,
@@ -218,7 +218,7 @@ def _ask(label: str, current: Any, *, secret: bool = False) -> str:
     """
     has_current = current is not None and str(current) != ""
     if not has_current:
-        hint = "empty"
+        hint = empty_hint
     elif secret:
         hint = ui.mask(str(current))
     else:
@@ -294,18 +294,39 @@ def _ask_whisper_size(current: str) -> str:
     return _ask_choice("model size", presets, current, default=DEFAULT_WHISPER_SIZE)
 
 
-def _show_devices() -> None:
-    devices = audio.enumerate_devices()
-    if devices["input"]:
-        ui.info("   Microphones detected:")
-        for name in devices["input"]:
-            ui.info(f"     - {name}")
-    if devices["loopback"]:
-        ui.info("   Loopback / system-audio devices detected:")
-        for name in devices["loopback"]:
-            ui.info(f"     - {name}")
-    if not devices["input"] and not devices["loopback"]:
-        ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
+def _ask_device(
+    label: str, heading: str, names: list[str], default_name: str, current: str
+) -> str:
+    """Prompt for one audio device, listing the detected ones by index.
+
+    An index picks from the list, ``0`` clears a pinned device back to the
+    system default, and any other text is stored as-is (soundcard matches
+    names by substring and then fuzzily, and macOS gets no loopback list at
+    all, so BlackHole has to be typed). Enter keeps the current value;
+    empty means "follow whatever the system default is at capture time"
+    rather than pinning today's name.
+    """
+    if names:
+        ui.info(f"   {heading}:")
+        for line in audio.format_device_lines(names, default_name):
+            ui.info(f"     {line}")
+
+    note = "pattern match supported, 0 = system default" if current else "pattern match supported"
+    prompt = f"  {label} ({note})"
+    for _ in range(MAX_PROMPT_RETRIES):
+        answer = _ask(prompt, current, empty_hint="system default").strip()
+        if answer == current:
+            # Enter kept the stored value; never re-read it as a list index.
+            return answer
+        if answer == "0":
+            return ""
+        if not names or not answer.isdigit():
+            return answer
+        number = int(answer)
+        if 1 <= number <= len(names):
+            return names[number - 1]
+        ui.warn(f"{label}: give an index 1-{len(names)} or a device name, please try again.")
+    raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
 def run_wizard(path: str | os.PathLike[str] | None = None) -> int:
@@ -351,11 +372,23 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     ui.info("\n3) Whisper model size")
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
-    ui.info("\n4) Audio devices (Enter = auto-detect defaults)")
-    _show_devices()
-    cfg["input_device"] = _ask("  microphone (blank = default)", cfg["input_device"])
-    cfg["loopback_device"] = _ask(
-        "  loopback / system audio (blank = default)", cfg["loopback_device"]
+    ui.info("\n4) Audio devices — pick what gets transcribed")
+    devices = audio.enumerate_devices()
+    if not devices["input"] and not devices["loopback"]:
+        ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
+    cfg["input_device"] = _ask_device(
+        "Input Microphone index or name",
+        "Microphones detected",
+        devices["input"],
+        devices["default_input"],
+        str(cfg["input_device"]),
+    )
+    cfg["loopback_device"] = _ask_device(
+        "Input Audio Device index or name",
+        "Loopback / system-audio devices detected",
+        devices["loopback"],
+        devices["default_loopback"],
+        str(cfg["loopback_device"]),
     )
 
     ui.info(

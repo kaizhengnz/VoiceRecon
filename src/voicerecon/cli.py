@@ -95,18 +95,22 @@ def _print_devices() -> None:
 
     devices = audio.enumerate_devices()
     ui.rule("Audio devices")
-    if devices["input"]:
-        ui.info("Microphones:")
-        for name in devices["input"]:
-            ui.info(f"  - {name}")
-    else:
-        ui.info("Microphones: (none detected)")
-    if devices["loopback"]:
-        ui.info("\nLoopback / system-audio inputs:")
-        for name in devices["loopback"]:
-            ui.info(f"  - {name}")
-    else:
-        ui.info("\nLoopback / system-audio inputs: (none detected)")
+    _print_device_list("Microphones", devices["input"], devices["default_input"])
+    ui.info("")
+    _print_device_list(
+        "Loopback / system-audio inputs", devices["loopback"], devices["default_loopback"]
+    )
+
+
+def _print_device_list(heading: str, names: list[str], default_name: str) -> None:
+    from . import audio
+
+    if not names:
+        ui.info(f"{heading}: (none detected)")
+        return
+    ui.info(f"{heading}:")
+    for line in audio.format_device_lines(names, default_name):
+        ui.info(f"  {line}")
 
 
 def _print_presets() -> None:

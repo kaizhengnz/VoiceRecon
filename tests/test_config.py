@@ -106,6 +106,76 @@ def test_save_load_roundtrip(tmp_path: Path):
     assert reloaded["anthropic_api_key"] == "secret"
 
 
+DEVICES = ["Webcam Mic", "Headset Mic"]
+
+
+def _answer(monkeypatch, text: str) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: text)
+
+
+def test_ask_device_picks_by_number(monkeypatch):
+    _answer(monkeypatch, "2")
+    chosen = config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "")
+    assert chosen == "Headset Mic"
+
+
+def test_ask_device_accepts_a_typed_name(monkeypatch):
+    _answer(monkeypatch, "BlackHole 2ch")
+    chosen = config._ask_device("loopback", "Loopbacks", DEVICES, "Webcam Mic", "")
+    assert chosen == "BlackHole 2ch"
+
+
+def test_ask_device_blank_keeps_the_system_default(monkeypatch):
+    """Blank stores "", so capture follows the default at run time."""
+    _answer(monkeypatch, "")
+    chosen = config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "")
+    assert chosen == ""
+
+
+def test_ask_device_blank_keeps_the_current_value(monkeypatch):
+    _answer(monkeypatch, "")
+    chosen = config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "Headset Mic")
+    assert chosen == "Headset Mic"
+
+
+def test_ask_device_zero_clears_a_pinned_device(monkeypatch):
+    _answer(monkeypatch, "0")
+    chosen = config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "Headset Mic")
+    assert chosen == ""
+
+
+def test_ask_device_keeps_a_digit_valued_current_as_a_name(monkeypatch):
+    """Enter on a stored "2" keeps "2"; it is not re-read as list index 2."""
+    _answer(monkeypatch, "")
+    assert config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "2") == "2"
+
+
+def test_ask_device_rejects_out_of_range_number(monkeypatch):
+    _answer(monkeypatch, "9")
+    with pytest.raises(config.WizardAborted, match="microphone"):
+        config._ask_device("microphone", "Microphones", DEVICES, "Webcam Mic", "")
+
+
+def test_ask_device_takes_a_digit_as_a_name_when_nothing_was_detected(monkeypatch):
+    _answer(monkeypatch, "2")
+    assert config._ask_device("microphone", "Microphones", [], "", "") == "2"
+
+
+def test_ask_device_hints_the_system_default_when_unset(monkeypatch):
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    config._ask_device("your own voice", "Microphones", DEVICES, "Webcam Mic", "")
+    assert "[system default]" in prompts[0]
+
+
+def test_ask_device_lists_the_default_marker(monkeypatch, capsys):
+    _answer(monkeypatch, "")
+    config._ask_device("microphone", "Microphones", DEVICES, "Headset Mic", "")
+    out = capsys.readouterr().out
+    assert "1) Webcam Mic" in out
+    assert "2) Headset Mic  — default" in out
+
+
 def test_config_path_uses_xdg(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert config.config_path() == tmp_path / "voicerecon" / "config.json"
