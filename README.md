@@ -91,7 +91,7 @@ voicerecon --show
 }
 ```
 
-`input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by number, marks the one an empty field resolves to, and accepts either a number or a typed name; `0` clears a pinned device back to the system default.
+`input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by index, marks the one an empty field resolves to, and accepts an index or a device name — partial names match; `0` clears a pinned device back to the system default.
 
 The three credential fields are only required when using `--listen <preset>`. Transcript-only mode works with them all empty.
 

@@ -297,14 +297,14 @@ def _ask_whisper_size(current: str) -> str:
 def _ask_device(
     label: str, heading: str, names: list[str], default_name: str, current: str
 ) -> str:
-    """Prompt for one audio device, listing the detected ones by number.
+    """Prompt for one audio device, listing the detected ones by index.
 
-    A number picks from the list, ``0`` clears a pinned device back to the
+    An index picks from the list, ``0`` clears a pinned device back to the
     system default, and any other text is stored as-is (soundcard matches
-    names loosely, and macOS gets no loopback list at all, so BlackHole has
-    to be typed). Enter keeps the current value; empty means "follow
-    whatever the system default is at capture time" rather than pinning
-    today's name.
+    names by substring and then fuzzily, and macOS gets no loopback list at
+    all, so BlackHole has to be typed). Enter keeps the current value;
+    empty means "follow whatever the system default is at capture time"
+    rather than pinning today's name.
     """
     if names:
         ui.info(f"   {heading}:")
@@ -324,7 +324,7 @@ def _ask_device(
         number = int(answer)
         if 1 <= number <= len(names):
             return names[number - 1]
-        ui.warn(f"{label}: enter 1-{len(names)} or a device name, please try again.")
+        ui.warn(f"{label}: give an index 1-{len(names)} or a device name, please try again.")
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
@@ -371,20 +371,20 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     ui.info("\n3) Whisper model size")
     cfg["whisper_model_size"] = _ask_whisper_size(str(cfg["whisper_model_size"]))
 
-    ui.info("\n4) Audio devices — pick which devices get transcribed")
-    ui.info("   A number from the list or a device name both work; Enter takes the system default.")
+    ui.info("\n4) Audio devices — pick what gets transcribed")
+    ui.info("   Give an index from the list or a device name; partial names match.")
     devices = audio.enumerate_devices()
     if not devices["input"] and not devices["loopback"]:
         ui.info("   (no devices could be enumerated — soundcard may need to be installed)")
     cfg["input_device"] = _ask_device(
-        "microphone to transcribe",
+        "Microphone index or name",
         "Microphones detected",
         devices["input"],
         devices["default_input"],
         str(cfg["input_device"]),
     )
     cfg["loopback_device"] = _ask_device(
-        "system-audio device to transcribe",
+        "Audio device index or name",
         "Loopback / system-audio devices detected",
         devices["loopback"],
         devices["default_loopback"],
