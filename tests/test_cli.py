@@ -180,6 +180,31 @@ def test_cli_prompt_overrides_cfg_prompt(tmp_path, monkeypatch):
     assert captured["preset"].name == "interview_candidate"
 
 
+def test_cfg_prompt_trigger_overrides_built_in(tmp_path, monkeypatch):
+    """cfg["prompt_trigger"] flips a built-in preset's trigger at runtime."""
+    config_path = _write_valid_config(
+        tmp_path, prompt="meeting_summary", prompt_trigger="per_segment"
+    )
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    assert captured["preset"].name == "meeting_summary"
+    assert captured["preset"].trigger == "per_segment"
+
+
+def test_cfg_prompt_trigger_applies_to_custom(tmp_path, monkeypatch):
+    config_path = _write_valid_config(
+        tmp_path, prompt="Recap the meeting.", prompt_trigger="on_shutdown"
+    )
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    preset = captured["preset"]
+    assert preset.is_custom is True
+    assert preset.trigger == "on_shutdown"
+    assert preset.speaker_filter == "both"
+
+
 def test_cfg_prompt_requires_credentials(tmp_path, monkeypatch, capsys):
     config_path = _write_valid_config(
         tmp_path, with_credentials=False, prompt="meeting_summary"

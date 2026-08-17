@@ -22,6 +22,7 @@ touched.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Literal
 
@@ -105,8 +106,14 @@ def names() -> list[str]:
     return sorted(BUILT_IN)
 
 
-def resolve(value: str) -> Preset | None:
+def resolve(value: str, *, trigger_override: str = "") -> Preset | None:
     """Turn one string into a Preset (built-in match), custom preset, or None.
+
+    ``trigger_override`` (from ``cfg["prompt_trigger"]``) overrides the
+    baked-in trigger on a built-in preset when set to ``per_segment`` or
+    ``on_shutdown``, and picks the trigger for a custom prompt. Empty
+    means "use the preset's built-in default, or ``per_segment`` for a
+    custom prompt".
 
     Ambiguity: a custom prompt that happens to equal a built-in name
     resolves as the built-in.
@@ -114,32 +121,40 @@ def resolve(value: str) -> Preset | None:
     stripped = (value or "").strip()
     if not stripped:
         return None
+    override: Trigger | None = None
+    if trigger_override in ("per_segment", "on_shutdown"):
+        override = trigger_override  # type: ignore[assignment]
     if stripped in BUILT_IN:
-        return BUILT_IN[stripped]
-    return make_custom(stripped)
+        preset = BUILT_IN[stripped]
+        if override is not None and override != preset.trigger:
+            return dataclasses.replace(preset, trigger=override)
+        return preset
+    return make_custom(stripped, trigger=override or "per_segment")
 
 
 _CUSTOM_NAME = "custom"
 _DESCRIPTION_MAX_LEN = 60
 
 
-def make_custom(prompt: str) -> Preset:
-    """Build an ad-hoc streaming preset from a free-form prompt string.
+def make_custom(prompt: str, *, trigger: Trigger = "per_segment") -> Preset:
+    """Build an ad-hoc preset from a free-form prompt string.
 
-    Filter is fixed to ``them``, context to ``current``, trigger to
-    ``per_segment``. Batch (``on_shutdown``) is not available on this path;
-    the built-in ``meeting_summary`` preset is the sole way to get
-    end-of-session summarization.
+    Filter defaults follow trigger (``per_segment`` → ``them``,
+    ``on_shutdown`` → ``both``) so batch custom prompts see everyone's
+    speech and streaming custom prompts only respond to the other party
+    unless the user picks a built-in preset for something else.
     """
     cleaned = (prompt or "").strip()
     if not cleaned:
         raise ValueError("prompt requires non-empty text")
+    speaker_filter: SpeakerFilter = "both" if trigger == "on_shutdown" else "them"
     return Preset(
         name=_CUSTOM_NAME,
-        speaker_filter="them",
+        speaker_filter=speaker_filter,
         context="current",
         prompt=cleaned,
         description=_summarize_prompt(cleaned),
+        trigger=trigger,
     )
 
 

@@ -103,3 +103,24 @@ def test_resolve_free_text_returns_custom():
     assert p is not None
     assert p.is_custom is True
     assert p.prompt == "Translate to English."
+
+
+def test_resolve_trigger_override_on_preset():
+    p = presets.resolve("meeting_summary", trigger_override="per_segment")
+    assert p is not None
+    assert p.name == "meeting_summary"
+    assert p.trigger == "per_segment"
+
+
+def test_resolve_trigger_override_on_custom():
+    p = presets.resolve("Summarise the meeting.", trigger_override="on_shutdown")
+    assert p is not None
+    assert p.is_custom is True
+    assert p.trigger == "on_shutdown"
+    assert p.speaker_filter == "both"  # batch custom defaults to both
+
+
+def test_resolve_empty_trigger_override_keeps_preset_default():
+    p = presets.resolve("meeting_summary", trigger_override="")
+    assert p is presets.BUILT_IN["meeting_summary"]
+    assert p.trigger == "on_shutdown"

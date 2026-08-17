@@ -45,6 +45,7 @@ DEFAULTS: dict[str, Any] = {
     "input_device": "",  # empty = default microphone
     "loopback_device": "",  # empty = default speaker's loopback
     "prompt": "",  # empty = transcript-only; preset name = that preset; else custom text
+    "prompt_trigger": "",  # only meaningful for custom prompt: "per_segment" or "on_shutdown"
     "model": DEFAULT_MODEL,
     "anthropic_api_key": "",
     "telegram_bot_token": "",
@@ -175,6 +176,17 @@ def validate_config(cfg: dict[str, Any]) -> None:
     prompt = cfg.get("prompt")
     if prompt is not None and not isinstance(prompt, str):
         raise ConfigError(f"Config field 'prompt' must be a string, got {prompt!r}")
+
+    prompt_trigger = cfg.get("prompt_trigger")
+    if prompt_trigger is not None and not isinstance(prompt_trigger, str):
+        raise ConfigError(
+            f"Config field 'prompt_trigger' must be a string, got {prompt_trigger!r}"
+        )
+    if isinstance(prompt_trigger, str) and prompt_trigger.strip() not in ("", "per_segment", "on_shutdown"):
+        raise ConfigError(
+            f"Config field 'prompt_trigger' must be '' / 'per_segment' / 'on_shutdown'; "
+            f"got {prompt_trigger!r}"
+        )
 
     for field in CREDENTIAL_FIELDS:
         value = cfg.get(field)
@@ -319,21 +331,50 @@ def _ask_choice(
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
-def _ask_default_prompt(current: str) -> str:
-    """Wizard step for ``cfg["prompt"]``."""
+def _ask_default_prompt(current_prompt: str, current_trigger: str) -> tuple[str, str]:
+    """Wizard step for ``cfg["prompt"]`` and ``cfg["prompt_trigger"]``.
+
+    Returns ``(prompt, trigger)``. ``prompt`` is a built-in name, custom
+    text, or empty. ``trigger`` is asked whenever ``prompt`` is non-empty
+    — for a built-in preset the question defaults to the preset's baked
+    trigger; for a custom prompt it defaults to the previously stored
+    value (or ``per_segment`` on fresh install).
+    """
     custom_sentinel = "__type_your_own_prompt__"
     preset_order = ("meeting_summary", "interview_candidate", "interview_recruiter")
     options: list[tuple[str, str, str]] = [
         (name, name, presets.BUILT_IN[name].description) for name in preset_order
     ]
     options.append(("type your own prompt", custom_sentinel, ""))
-    chosen = _ask_choice("Prompt", options, current)
+    chosen = _ask_choice("Prompt", options, current_prompt)
+
     if chosen == custom_sentinel:
         # Do not prefill a built-in preset name as the free-text default —
         # the user just chose to move away from it.
-        default_text = "" if current in presets.BUILT_IN else current
-        return _ask("Prompt text", default_text).strip()
-    return chosen
+        default_text = "" if current_prompt in presets.BUILT_IN else current_prompt
+        prompt = _ask("Prompt text", default_text).strip()
+    else:
+        prompt = chosen
+
+    if not prompt:
+        return "", ""
+
+    if prompt in presets.BUILT_IN:
+        trigger_default = presets.BUILT_IN[prompt].trigger
+    elif current_trigger in ("per_segment", "on_shutdown"):
+        trigger_default = current_trigger
+    else:
+        trigger_default = "per_segment"
+    return prompt, _ask_prompt_trigger(trigger_default)
+
+
+def _ask_prompt_trigger(baked_default: str) -> str:
+    """Wizard step for the prompt's trigger."""
+    options: list[tuple[str, str, str]] = [
+        ("Ctrl+C", "on_shutdown", "once at Ctrl+C over the full session"),
+        ("each segment", "per_segment", "after every completed utterance"),
+    ]
+    return _ask_choice("Trigger", options, baked_default, default=baked_default)
 
 
 def _ask_whisper_size(current: str) -> str:
@@ -391,7 +432,9 @@ def run_set_prompt(path: str | os.PathLike[str] | None = None) -> int:
     ui.rule("VoiceRecon set default prompt")
     ui.info(f"Config file: {resolved}")
     try:
-        raw["prompt"] = _ask_default_prompt(str(raw.get("prompt") or ""))
+        raw["prompt"], raw["prompt_trigger"] = _ask_default_prompt(
+            str(raw.get("prompt") or ""), str(raw.get("prompt_trigger") or "")
+        )
     except WizardAborted as exc:
         ui.error(str(exc))
         ui.error("Nothing was saved.")
@@ -497,7 +540,9 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
         "\n6) Default prompt (used when you run 'voicerecon' with no --prompt;"
         " press Enter with an empty current value for transcript-only)"
     )
-    cfg["prompt"] = _ask_default_prompt(str(cfg.get("prompt") or ""))
+    cfg["prompt"], cfg["prompt_trigger"] = _ask_default_prompt(
+        str(cfg.get("prompt") or ""), str(cfg.get("prompt_trigger") or "")
+    )
 
     has_ai = bool(str(cfg["anthropic_api_key"]).strip())
     has_tg = bool(str(cfg["telegram_bot_token"]).strip() and str(cfg["telegram_chat_id"]).strip())

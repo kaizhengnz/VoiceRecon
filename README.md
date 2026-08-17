@@ -92,6 +92,7 @@ The filter / context / trigger of a built-in preset are baked in and cannot be o
   "input_device": "",
   "loopback_device": "",
   "prompt": "",
+  "prompt_trigger": "",
   "model": "claude-haiku-4-5",
   "anthropic_api_key": "",
   "telegram_bot_token": "",
@@ -101,7 +102,9 @@ The filter / context / trigger of a built-in preset are baked in and cannot be o
 
 `input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by index, marks the one an empty field resolves to, and accepts an index or a device name — partial names match; `0` clears a pinned device back to the system default.
 
-`prompt` is the single field that decides AI mode when you run `voicerecon` with no `--prompt`. Empty = transcript-only; a value that matches a built-in preset name (`interview_candidate`, `interview_recruiter`, `meeting_summary`) uses that preset with its baked filter/context/trigger; any other text is treated as a custom streaming prompt (filter=them + context=current + per-segment). `--configure` sets it via a numbered menu that also offers "type your own prompt" for the free-text case. `--prompt VALUE` on the CLI overrides `cfg["prompt"]` for a single session and follows the same disambiguation rule.
+`prompt` is the single field that decides AI mode when you run `voicerecon` with no `--prompt`. Empty = transcript-only; a value that matches a built-in preset name (`interview_candidate`, `interview_recruiter`, `meeting_summary`) uses that preset with its baked filter/context/trigger; any other text is treated as a custom prompt. `--configure` sets it via a numbered menu that also offers "type your own prompt" for the free-text case. `--prompt VALUE` on the CLI overrides `cfg["prompt"]` for a single session and follows the same disambiguation rule.
+
+`prompt_trigger` picks when the AI is called: `per_segment` fires after every completed utterance, `on_shutdown` fires once at Ctrl+C over the full session. Empty means "use the built-in preset's baked default, or `per_segment` for a custom prompt". `--configure` (and bare `voicerecon --prompt`) asks this after the prompt itself; a non-empty value in the config **overrides** the preset's baked trigger — e.g. setting `"prompt": "meeting_summary", "prompt_trigger": "per_segment"` runs the meeting-summary prompt after every utterance instead of at Ctrl+C. `filter` on custom prompts follows the chosen trigger (`per_segment` → `them`, `on_shutdown` → `both`).
 
 The three credential fields are only required when `cfg["prompt"]` (or `--prompt VALUE`) resolves to a preset. Transcript-only mode works with them all empty.
 

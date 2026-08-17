@@ -97,6 +97,7 @@ def _print_show(cfg: dict) -> None:
     ui.info(f"  Input device:          {cfg.get('input_device') or '(default)'}")
     ui.info(f"  Loopback device:       {cfg.get('loopback_device') or '(default)'}")
     ui.info(f"  Default prompt:        {cfg.get('prompt') or '(none — transcript only)'}")
+    ui.info(f"  Prompt trigger:        {cfg.get('prompt_trigger') or '(preset default / per_segment for custom)'}")
     ui.info(f"  AI model:              {cfg['model']}")
     ui.info(f"  Anthropic key:         {ui.mask(str(cfg['anthropic_api_key']))}")
     ui.info(f"  Telegram bot:          {ui.mask(str(cfg['telegram_bot_token']))}")
@@ -191,8 +192,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # --prompt overrides cfg["prompt"]. Bare --prompt (setter mode) was
         # handled above before we even loaded the runtime config.
         raw_value = args.prompt if isinstance(args.prompt, str) else str(cfg.get("prompt") or "")
+        trigger_override = str(cfg.get("prompt_trigger") or "")
         try:
-            preset: presets.Preset | None = presets.resolve(raw_value)
+            preset: presets.Preset | None = presets.resolve(
+                raw_value, trigger_override=trigger_override
+            )
         except ValueError as exc:
             ui.error(str(exc))
             return 1

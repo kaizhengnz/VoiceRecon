@@ -104,6 +104,23 @@ def test_validate_rejects_non_string_prompt():
         config.validate_config(cfg)
 
 
+def test_validate_accepts_empty_prompt_trigger():
+    cfg = dict(config.DEFAULTS, prompt_trigger="")
+    config.validate_config(cfg)
+
+
+def test_validate_accepts_known_prompt_trigger():
+    for trigger in ("per_segment", "on_shutdown"):
+        cfg = dict(config.DEFAULTS, prompt_trigger=trigger)
+        config.validate_config(cfg)
+
+
+def test_validate_rejects_unknown_prompt_trigger():
+    cfg = dict(config.DEFAULTS, prompt_trigger="hourly")
+    with pytest.raises(config.ConfigError):
+        config.validate_config(cfg)
+
+
 def test_require_credentials_for_ai_passes_when_all_set():
     cfg = dict(
         config.DEFAULTS,
