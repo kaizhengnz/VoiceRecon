@@ -36,25 +36,31 @@ The design goals mirror ScreenRecon:
             ▼                            ▼
         ┌─────────────────────────────────┐
         │            Segmenter            │
-        │  per-stream PendingSegment,     │
-        │  emits ReadySegment on:         │
-        │   - end (silence threshold)     │
-        │   - other-stream start (cut)    │
-        └───────────────┬─────────────────┘
-                        │  ReadySegment (audio, speaker, timestamps)
-                        ▼
-                 ┌──────────────┐
-                 │ Transcriber  │  faster-whisper (small model default)
-                 │  auto lang   │
-                 └──────┬───────┘
-                        │  Transcription(text, language)
-                        ▼
+        │  loopback-priority filter,      │
+        │  routes accepted audio to sink, │
+        │  emits ReadySegment (boundary)  │
+        │  on end / preemption            │
+        └────────┬────────────────────────┘
+                 │  audio blocks             │  ReadySegment
+                 │  (speaker, samples)       │  (speaker, boundaries)
+                 ▼                           ▼
+        ┌──────────────────────────┐   ┌─────────────────────┐
+        │ StreamingTranscriber ×2  │   │ finalize() on end,  │
+        │ (one per speaker)        │   │ flush accumulated   │
+        │ LocalAgreement-2 over    │   │ text to writer + AI │
+        │ rolling buffer;          │   └──────────┬──────────┘
+        │ commit_step() emits      │              │
+        │ stabilised prefix        │              │
+        └──────────┬───────────────┘              │
+                   │ committed text (incremental) │
+                   └───────────────┬──────────────┘
+                                   ▼
         ┌──────────────────────────────┐
         │      TranscriptWriter        │  always
-        │  append line to daily file   │
+        │  append line per utterance   │
         └──────────────────────────────┘
                         │
-                        ▼ (only when --listen <preset>)
+                        ▼ (only when a preset is active)
         ┌──────────────────────────────┐
         │  Preset filter + context     │  drop / include per preset
         │  assemble system + user text │
@@ -69,17 +75,18 @@ The design goals mirror ScreenRecon:
                   └──────────┘
 ```
 
-The diagram shows the per-segment path. Presets with `trigger="on_shutdown"` (e.g. `meeting_summary`) skip the per-segment branch entirely; the retained session is handed to the AI once at Ctrl+C, and the reply is written to a summary file under `save_dir` in addition to being pushed to Telegram. See §5.
+The diagram shows the per-segment path. Presets with `trigger="on_shutdown"` (e.g. `meeting_summary`) skip the per-segment branch entirely; the retained session is handed to the AI once at Ctrl+C, and the reply is written to a summary file under `save_dir` in addition to being pushed to Telegram. See §6.
 
 ## 3. Threading
 
 - Two capture threads (one per `AudioSource`), owned by `soundcard`'s recorder context manager.
-- Both capture threads push audio + events into a single, lock-protected `Segmenter`. The lock is held only for the duration of the update — VAD runs *before* acquiring it.
-- The main thread runs a work loop at 100 ms cadence: drain ready segments, transcribe synchronously, write to disk, optionally call AI + Telegram.
+- Both capture threads push audio + events into a single, lock-protected `Segmenter`. The segmenter's lock is held only for the state update — VAD runs *before* acquiring it, and audio that survives the loopback-priority filter is forwarded to the streaming sink *after* releasing it, so a slow sink cannot stall the capture threads.
+- The sink is the runner's per-speaker `StreamingTranscriber`. Its own lock guards the rolling audio buffer, held only around buffer mutations. `feed` (audio thread) appends; `commit_step` and `finalize` (main thread) snapshot and trim. Whisper runs *outside* the lock, so a 200 ms transcription pass does not block capture.
+- The main thread runs a work loop at 500 ms cadence: drain segment boundaries (each triggers `finalize` on the matching streamer plus writer + AI delivery), then call `commit_step` on each streamer to flush any locally-agreed prefix to the terminal.
 
-STT is synchronous on the main thread on purpose. Running Whisper concurrently on multiple segments blows up CPU / RAM and interleaves partial output; queueing them keeps the pipeline predictable.
+Whisper is serialised on the main thread on purpose. Two streamers share one `WhisperModel` — CTranslate2 has no per-call state and both callers are on the same thread, so sharing halves memory without introducing a race. Concurrent transcription would blow up CPU / RAM and interleave partial output.
 
-`Transcriber` resolves its backend on first use: `cuda` when CTranslate2 reports a visible CUDA device, `cpu` otherwise. The compute type follows the resolved device — `float16` on GPU, `int8` on CPU — rather than faster-whisper's own `auto`, because on Blackwell (RTX 50-series) `auto` selects an int8 variant and every int8 CUDA path fails with `CUBLAS_STATUS_NOT_SUPPORTED`. Both parameters stay overridable by the caller for anyone who needs to pin them.
+`build_model` resolves the backend on first use: `cuda` when CTranslate2 reports a visible CUDA device, `cpu` otherwise. The compute type follows the resolved device — `float16` on GPU, `int8` on CPU — rather than faster-whisper's own `auto`, because on Blackwell (RTX 50-series) `auto` selects an int8 variant and every int8 CUDA path fails with `CUBLAS_STATUS_NOT_SUPPORTED`. Both parameters stay overridable by the caller for anyone who needs to pin them.
 
 ## 4. Segmentation rules
 
@@ -92,7 +99,17 @@ Rule 2 is asymmetric on purpose. The standard capture setup is a laptop speaker 
 
 Rule 2 is also why Segmenter needs cross-stream visibility (a per-stream VAD alone cannot know the other stream started).
 
-## 5. Speaker filter, context, and trigger
+## 5. Streaming transcription
+
+Whisper is offline: hand it an utterance, it returns the whole text at once. A 20-second interviewer question therefore appears in the transcript only *after* the speaker stops, even though most of the words were locked in long before then. `StreamingTranscriber` fixes that with **LocalAgreement-2** (Machaček et al., IWSLT 2023): every ~500 ms of accumulated audio is transcribed, and the longest word-prefix that two consecutive hypotheses agree on is *committed* — treated as final for that portion of audio. The committed audio is trimmed off the buffer so Whisper's context stays bounded and the next pass works on the tail.
+
+Each speaker owns its own `StreamingTranscriber` instance so the me/them streams progress independently; both share one `WhisperModel` because CTranslate2 has no per-call state and all transcription runs serially on the main thread. `feed` is called from the audio thread inside the Segmenter's stream sink — the streamer's own lock guards the rolling buffer, held only around mutations so Whisper's own 100–500 ms pass never blocks capture.
+
+The **AI trigger point is unchanged**: `per_segment` presets still fire once, on VAD `end`, with the full utterance's text. Streaming only reduces the latency of what appears on the terminal (and, at session end, in the file) — it does not multiply AI calls or feed the AI half-finished sentences. Committed text is written to the terminal as it becomes stable; the transcript *file* still gets one line per completed utterance, assembled from the accumulated committed chunks plus the final `finalize` tail on VAD `end`.
+
+`min_chunk_seconds` (default 1.0 s) is the paper's sweet spot on the latency/CPU curve; sub-second thrashes the model without perceptual gain, multi-second erodes the streaming feel. The runner pumps `commit_step` on a 500 ms cadence — the first commit lands ~1–2 s into an utterance rather than 20+ s later.
+
+## 6. Speaker filter, context, and trigger
 
 Every preset declares:
 
@@ -104,7 +121,7 @@ Every preset declares:
 
 Custom prompts entered on the command line via `--prompt "..."` are turned into an ad-hoc `Preset` by `presets.make_custom`, which validates the context spec and speaker filter before the pipeline starts. Ad-hoc presets always use `trigger="per_segment"`; batch behaviour is only available through the built-in `meeting_summary`, so the framing prompt ("summarize the following…") stays consistent between what users see in the code and what they invoke.
 
-## 6. Config
+## 7. Config
 
 Fields (`~/.config/voicerecon/config.json` or `%APPDATA%\voicerecon\config.json`):
 
@@ -122,7 +139,7 @@ Fields (`~/.config/voicerecon/config.json` or `%APPDATA%\voicerecon\config.json`
 
 Credentials are optional at load time; `require_credentials_for_ai` is the single gate applied when `--listen` is given.
 
-## 7. Platform notes
+## 8. Platform notes
 
 - **Windows** — `soundcard` exposes each speaker's WASAPI loopback as a normal input device automatically. Zero setup after `pip install`. Mic capture routes through `sounddevice` (PortAudio) instead of `soundcard`: `soundcard`'s Windows backend asserts a `WAVEFORMATEXTENSIBLE` mix format that many consumer mics do not report, and crashes the capture thread on `mic.recorder()`. PortAudio negotiates the format itself and works with the same devices unmodified.
 - **Linux** — Same mechanism via PulseAudio / PipeWire monitor sources. Zero setup on distros with a working audio stack.
@@ -130,7 +147,7 @@ Credentials are optional at load time; `require_credentials_for_ai` is the singl
 
 Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a separate design effort; it is out of scope for MVP.
 
-## 8. Revision history
+## 9. Revision history
 
 | Date | Change |
 | --- | --- |
@@ -142,3 +159,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | 2026-08-17 | Port the SR-38 picker UX polish: `_ask_choice`'s current-line becomes `N) Current <label> = K (matching preset's note or label)` so options that resolve to the same result are visibly linked, padding kicks in only when at least one preset has a note, and the `Enter 1-N or type any X` prompt and `Choice must be 1-N` warning drop to column 0 so they read as input/feedback rather than more option rows |
 | 2026-08-17 | Unify AI-mode selection under one field / one flag (was in-flight as issue #21 "add listen field"; design iteration during review collapsed it into this shape). `cfg["listen"]` renamed to `cfg["prompt"]` — a single string that means transcript-only when empty, resolves to a built-in preset when it matches a `presets.BUILT_IN` name, and is used as a custom prompt otherwise. New sibling field `cfg["prompt_trigger"]` (empty / `per_segment` / `on_shutdown`) chooses when the AI is called — for a built-in preset a non-empty value overrides the baked trigger; for a custom prompt it picks the trigger (and the speaker filter follows: `per_segment` → `them`, `on_shutdown` → `both`). Remove `--listen`, `--from`, `--context` — CLI shrinks to just `--prompt VALUE`, which overrides `cfg["prompt"]` for one session and follows the same disambiguation rule. New helper `presets.resolve(value, trigger_override=...)` centralises both the disambiguation and the trigger override, returning a `dataclasses.replace`d preset when overriding a built-in. Wizard step 6 reorders to put `meeting_summary` first, adds a "type your own prompt" entry, and always asks the trigger after the prompt (defaulting to the built-in's baked value or the previously stored `cfg["prompt_trigger"]`). `--prompt` becomes `nargs="?"`: bare `voicerecon --prompt` runs a mini-wizard (`config.run_set_prompt`) that reuses the same prompt+trigger flow to change only those two fields. |
 | 2026-08-17 | Segmenter goes asymmetric (VR-23): loopback (`them`) owns the timeline, and mic (`me`) frames + VAD events are dropped while loopback is active. A loopback `start` still cuts a pending mic segment, but mic starting no longer cuts loopback. Fixes the standard speaker + built-in mic case where the symmetric cross-cut used to chop both streams into millisecond fragments because the mic picks up the leaked speaker audio. §4 rule 2 rewritten. |
+| 2026-08-18 | Streaming transcription (VR-25): port LocalAgreement-2 (Machaček et al., IWSLT 2023). New `StreamingTranscriber` runs Whisper on a rolling per-speaker buffer at ~500 ms cadence and commits the longest prefix two consecutive hypotheses agree on, so transcript text appears incrementally rather than after each VAD `end`. Segmenter drops its audio accumulation and instead routes accepted audio to a `on_stream_audio` sink; `ReadySegment` becomes a boundary-only record. Runner reworked around the streamer's `feed` / `commit_step` / `finalize` cycle. AI trigger semantics unchanged (still fires on VAD `end` with the full utterance's text). New §5 in this doc. |

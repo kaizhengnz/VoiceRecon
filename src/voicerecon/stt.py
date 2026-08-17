@@ -5,8 +5,8 @@ download and CTranslate2 init cost several seconds, and paying it during
 ``--help`` / ``--configure`` is user-hostile.
 
 The model runs on a CUDA GPU when one is visible and on the CPU otherwise;
-:meth:`Transcriber._resolve_backend` owns that choice, including the compute
-type, which cannot be left to faster-whisper's own ``auto`` (see there).
+:func:`resolve_backend` owns that choice, including the compute type,
+which cannot be left to faster-whisper's own ``auto`` (see there).
 
 Auto language detection is on by default; each utterance is transcribed
 independently, so a session that switches languages mid-way is handled per
@@ -39,6 +39,42 @@ def _cuda_device_count() -> int:
         return 0
 
 
+def resolve_backend(
+    device: str = "auto", compute_type: str | None = None
+) -> tuple[str, str]:
+    """Resolve ``("auto", None)`` into a concrete device + compute type.
+
+    ``float16`` is the GPU default rather than letting faster-whisper
+    choose: its own ``auto`` picks an int8 variant on Blackwell, and every
+    int8 CUDA path there fails with ``CUBLAS_STATUS_NOT_SUPPORTED``.
+    """
+    if device == "auto":
+        device = "cuda" if _cuda_device_count() > 0 else "cpu"
+    if compute_type is None:
+        compute_type = "float16" if device == "cuda" else "int8"
+    return device, compute_type
+
+
+def build_model(
+    model_size: str = DEFAULT_MODEL_SIZE,
+    *,
+    device: str = "auto",
+    compute_type: str | None = None,
+    factory: Callable[..., Any] | None = None,
+) -> Any:
+    """Build one WhisperModel (or ``factory`` result) with resolved backend.
+
+    Shared by :class:`Transcriber` and
+    :class:`voicerecon.streaming.StreamingTranscriber` so both pick up the
+    same device / compute-type policy.
+    """
+    resolved_device, resolved_compute = resolve_backend(device, compute_type)
+    if factory is not None:
+        return factory(model_size, device=resolved_device, compute_type=resolved_compute)
+    from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+    return WhisperModel(model_size, device=resolved_device, compute_type=resolved_compute)
+
+
 class Transcriber:
     """Wraps a WhisperModel and offers one method: :meth:`transcribe`.
 
@@ -56,7 +92,7 @@ class Transcriber:
     ) -> None:
         """``device`` ``"auto"`` picks ``cuda`` when a CUDA device is visible
         and ``cpu`` otherwise; ``compute_type`` ``None`` then follows from the
-        resolved device (see :meth:`_resolve_backend`). Both can be pinned by
+        resolved device (see :func:`resolve_backend`). Both can be pinned by
         the caller.
 
         ``model_factory`` is a seam for tests: a callable returning any
@@ -68,34 +104,14 @@ class Transcriber:
         self._factory = model_factory
         self._model: Any | None = None
 
-    def _resolve_backend(self) -> tuple[str, str]:
-        """Resolve ``("auto", None)`` into a concrete device + compute type.
-
-        ``float16`` is the GPU default rather than letting faster-whisper
-        choose: its own ``auto`` picks an int8 variant on Blackwell, and every
-        int8 CUDA path there fails with ``CUBLAS_STATUS_NOT_SUPPORTED``.
-        """
-        device = self._device
-        if device == "auto":
-            device = "cuda" if _cuda_device_count() > 0 else "cpu"
-        compute_type = self._compute_type
-        if compute_type is None:
-            compute_type = "float16" if device == "cuda" else "int8"
-        return device, compute_type
-
     def _ensure_model(self) -> Any:
-        if self._model is not None:
-            return self._model
-        device, compute_type = self._resolve_backend()
-        if self._factory is not None:
-            self._model = self._factory(
-                self._model_size, device=device, compute_type=compute_type
+        if self._model is None:
+            self._model = build_model(
+                self._model_size,
+                device=self._device,
+                compute_type=self._compute_type,
+                factory=self._factory,
             )
-            return self._model
-        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
-        self._model = WhisperModel(
-            self._model_size, device=device, compute_type=compute_type
-        )
         return self._model
 
     def transcribe(self, audio: np.ndarray) -> str:
