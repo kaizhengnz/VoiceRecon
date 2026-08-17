@@ -79,7 +79,7 @@ def test_from_with_invalid_speaker_rejects(capsys):
         cli.main(["--prompt", "translate", "--from", "everybody"])
 
 
-def _write_valid_config(tmp_path, *, with_credentials: bool = True) -> str:
+def _write_valid_config(tmp_path, *, with_credentials: bool = True, **overrides) -> str:
     payload = dict(config.DEFAULTS, save_dir=str(tmp_path / "voicerecon"))
     if with_credentials:
         payload.update(
@@ -87,6 +87,7 @@ def _write_valid_config(tmp_path, *, with_credentials: bool = True) -> str:
             telegram_bot_token="token",
             telegram_chat_id="chat",
         )
+    payload.update(overrides)
     path = tmp_path / "config.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
@@ -157,20 +158,6 @@ def test_prompt_requires_credentials(tmp_path, monkeypatch, capsys):
     assert "API key" in (err_and_out.err + err_and_out.out) or "credentials" in (err_and_out.err + err_and_out.out).lower()
 
 
-def _write_config(tmp_path, **overrides) -> str:
-    payload = dict(
-        config.DEFAULTS,
-        save_dir=str(tmp_path / "voicerecon"),
-        anthropic_api_key="key",
-        telegram_bot_token="token",
-        telegram_chat_id="chat",
-    )
-    payload.update(overrides)
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    return str(path)
-
-
 def _record_run(monkeypatch) -> dict:
     captured: dict = {}
 
@@ -184,7 +171,7 @@ def _record_run(monkeypatch) -> dict:
 
 
 def test_no_flag_and_empty_cfg_listen_is_transcript_only(tmp_path, monkeypatch):
-    config_path = _write_config(tmp_path, listen="")
+    config_path = _write_valid_config(tmp_path, listen="")
     captured = _record_run(monkeypatch)
     rc = cli.main(["--config", config_path])
     assert rc == 0
@@ -192,7 +179,7 @@ def test_no_flag_and_empty_cfg_listen_is_transcript_only(tmp_path, monkeypatch):
 
 
 def test_no_flag_uses_cfg_listen_when_set(tmp_path, monkeypatch):
-    config_path = _write_config(tmp_path, listen="meeting_summary")
+    config_path = _write_valid_config(tmp_path, listen="meeting_summary")
     captured = _record_run(monkeypatch)
     rc = cli.main(["--config", config_path])
     assert rc == 0
@@ -201,7 +188,7 @@ def test_no_flag_uses_cfg_listen_when_set(tmp_path, monkeypatch):
 
 
 def test_cli_listen_overrides_cfg_listen(tmp_path, monkeypatch):
-    config_path = _write_config(tmp_path, listen="meeting_summary")
+    config_path = _write_valid_config(tmp_path, listen="meeting_summary")
     captured = _record_run(monkeypatch)
     rc = cli.main(["--listen", "interview_candidate", "--config", config_path])
     assert rc == 0
@@ -209,7 +196,7 @@ def test_cli_listen_overrides_cfg_listen(tmp_path, monkeypatch):
 
 
 def test_cli_prompt_overrides_cfg_listen(tmp_path, monkeypatch):
-    config_path = _write_config(tmp_path, listen="meeting_summary")
+    config_path = _write_valid_config(tmp_path, listen="meeting_summary")
     captured = _record_run(monkeypatch)
     rc = cli.main(["--prompt", "Custom", "--config", config_path])
     assert rc == 0
@@ -217,15 +204,11 @@ def test_cli_prompt_overrides_cfg_listen(tmp_path, monkeypatch):
 
 
 def test_cfg_listen_requires_credentials(tmp_path, monkeypatch, capsys):
-    payload = dict(
-        config.DEFAULTS,
-        save_dir=str(tmp_path / "voicerecon"),
-        listen="meeting_summary",
+    config_path = _write_valid_config(
+        tmp_path, with_credentials=False, listen="meeting_summary"
     )
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr("voicerecon.runner.run", lambda cfg, preset: 0)
-    rc = cli.main(["--config", str(path)])
+    rc = cli.main(["--config", config_path])
     assert rc == 1
     captured = capsys.readouterr()
     assert "AI mode needs" in (captured.err + captured.out)

@@ -206,7 +206,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = config.load(args.config_path)
 
         preset: presets.Preset | None = None
-        # Precedence: --listen > --prompt > cfg["listen"] > transcript-only.
         default_listen = str(cfg.get("listen") or "").strip()
         if args.listen:
             try:

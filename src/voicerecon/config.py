@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import audio, storage, ui
+from . import audio, presets, storage, ui
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_SAVE_DIR = "~/VoiceRecon"
@@ -175,14 +175,12 @@ def validate_config(cfg: dict[str, Any]) -> None:
     listen = cfg.get("listen")
     if listen is not None and not isinstance(listen, str):
         raise ConfigError(f"Config field 'listen' must be a string, got {listen!r}")
-    if isinstance(listen, str) and listen.strip():
-        # Lazy import: presets already imports config at load time indirectly.
-        from . import presets
-        if listen.strip() not in presets.BUILT_IN:
-            known = ", ".join(sorted(presets.BUILT_IN))
-            raise ConfigError(
-                f"Config field 'listen' must be empty or one of {known}; got {listen!r}"
-            )
+    stripped_listen = listen.strip() if isinstance(listen, str) else ""
+    if stripped_listen and stripped_listen not in presets.BUILT_IN:
+        known = ", ".join(sorted(presets.BUILT_IN))
+        raise ConfigError(
+            f"Config field 'listen' must be empty or one of {known}; got {listen!r}"
+        )
 
     for field in CREDENTIAL_FIELDS:
         value = cfg.get(field)
@@ -333,8 +331,6 @@ def _ask_choice(
 
 def _ask_listen(current: str) -> str:
     """Pick the default AI preset (or none) — value stored in ``cfg["listen"]``."""
-    from . import presets  # lazy: keeps --help free of the presets import
-
     options: list[tuple[str, str, str]] = [
         (name, name, presets.BUILT_IN[name].description)
         for name in sorted(presets.BUILT_IN)
