@@ -106,6 +106,27 @@ def names() -> list[str]:
     return sorted(BUILT_IN)
 
 
+def resolve(value: str) -> Preset | None:
+    """Interpret a string as a preset selection.
+
+    - Empty / whitespace → ``None`` (transcript-only)
+    - Matches a :data:`BUILT_IN` name → that preset (with its baked
+      speaker_filter / context / trigger)
+    - Anything else → an ad-hoc :func:`make_custom` preset with default
+      filter=them / context=current / trigger=per_segment
+
+    A custom prompt that happens to equal a built-in name (unlikely in
+    practice) resolves as the built-in — this is the one ambiguity of
+    using a single string field for both selection modes.
+    """
+    stripped = (value or "").strip()
+    if not stripped:
+        return None
+    if stripped in BUILT_IN:
+        return BUILT_IN[stripped]
+    return make_custom(stripped)
+
+
 _CUSTOM_NAME = "custom"
 _DESCRIPTION_MAX_LEN = 60
 

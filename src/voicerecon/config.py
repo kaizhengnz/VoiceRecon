@@ -44,7 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "whisper_model_size": DEFAULT_WHISPER_SIZE,
     "input_device": "",  # empty = default microphone
     "loopback_device": "",  # empty = default speaker's loopback
-    "listen": "",  # empty = transcript-only; else name of a built-in preset
+    "prompt": "",  # empty = transcript-only; preset name = that preset; else custom text
     "model": DEFAULT_MODEL,
     "anthropic_api_key": "",
     "telegram_bot_token": "",
@@ -172,15 +172,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
         if value is not None and not isinstance(value, str):
             raise ConfigError(f"Config field {field!r} must be a string")
 
-    listen = cfg.get("listen")
-    if listen is not None and not isinstance(listen, str):
-        raise ConfigError(f"Config field 'listen' must be a string, got {listen!r}")
-    stripped_listen = listen.strip() if isinstance(listen, str) else ""
-    if stripped_listen and stripped_listen not in presets.BUILT_IN:
-        known = ", ".join(sorted(presets.BUILT_IN))
-        raise ConfigError(
-            f"Config field 'listen' must be empty or one of {known}; got {listen!r}"
-        )
+    prompt = cfg.get("prompt")
+    if prompt is not None and not isinstance(prompt, str):
+        raise ConfigError(f"Config field 'prompt' must be a string, got {prompt!r}")
 
     for field in CREDENTIAL_FIELDS:
         value = cfg.get(field)
@@ -191,8 +185,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
 def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
     """Refuse to start AI mode when any credential is empty.
 
-    Called when the user selects ``--listen <preset>`` or ``--prompt "..."``.
-    Pure transcript mode does not need any of these fields.
+    Called whenever ``cfg["prompt"]`` (or the ``--prompt`` CLI override)
+    resolves to a preset. Pure transcript mode does not need any of these
+    fields.
     """
     missing = [
         _CREDENTIAL_LABELS[field]
@@ -329,19 +324,29 @@ def _ask_choice(
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
-def _ask_listen(current: str) -> str:
-    """Pick the default AI preset (or none) — value stored in ``cfg["listen"]``."""
+_CUSTOM_PROMPT_SENTINEL = "__type_your_own_prompt__"
+"""Menu-only marker for the 'type your own prompt' entry — its value is
+never stored in the config; a follow-up input collects the actual text."""
+
+_PRESET_ORDER = ("meeting_summary", "interview_candidate", "interview_recruiter")
+
+
+def _ask_default_prompt(current: str) -> str:
+    """Wizard step for ``cfg["prompt"]``.
+
+    Menu offers each built-in preset by name plus a 'type your own prompt'
+    entry that triggers a text follow-up. Enter with no current value = the
+    string returned is empty = transcript-only.
+    """
     options: list[tuple[str, str, str]] = [
-        (name, name, presets.BUILT_IN[name].description)
-        for name in sorted(presets.BUILT_IN)
+        (name, name, presets.BUILT_IN[name].description) for name in _PRESET_ORDER
     ]
-    options.append(("(none)", "", "run without AI — transcript only"))
-    for _ in range(MAX_PROMPT_RETRIES):
-        chosen = _ask_choice("Default preset", options, current)
-        if chosen == "" or chosen in presets.BUILT_IN:
-            return chosen
-        ui.warn(f"Preset {chosen!r} does not exist; pick a numbered option or leave empty.")
-    raise WizardAborted("Default preset: too many invalid answers, giving up.")
+    options.append(("type your own prompt", _CUSTOM_PROMPT_SENTINEL, ""))
+    chosen = _ask_choice("Prompt", options, current)
+    if chosen == _CUSTOM_PROMPT_SENTINEL:
+        default_text = "" if current in presets.BUILT_IN else current
+        return _ask("Prompt text", default_text).strip()
+    return chosen
 
 
 def _ask_whisper_size(current: str) -> str:
@@ -462,10 +467,10 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     cfg["telegram_chat_id"] = _ask("Telegram chat ID", cfg["telegram_chat_id"], secret=True)
 
     ui.info(
-        "\n6) Default preset (used when you run 'voicerecon' with no --listen / --prompt;"
-        " pick (none) for transcript-only default)"
+        "\n6) Default prompt (used when you run 'voicerecon' with no --prompt;"
+        " press Enter with an empty current value for transcript-only)"
     )
-    cfg["listen"] = _ask_listen(str(cfg.get("listen") or ""))
+    cfg["prompt"] = _ask_default_prompt(str(cfg.get("prompt") or ""))
 
     has_ai = bool(str(cfg["anthropic_api_key"]).strip())
     has_tg = bool(str(cfg["telegram_bot_token"]).strip() and str(cfg["telegram_chat_id"]).strip())

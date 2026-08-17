@@ -104,3 +104,20 @@ def test_make_custom_description_truncates_long_prompt():
     p = presets.make_custom(long_prompt)
     assert len(p.description) <= 60
     assert p.description.endswith("...")
+
+
+def test_resolve_empty_returns_none():
+    assert presets.resolve("") is None
+    assert presets.resolve("   ") is None
+
+
+def test_resolve_preset_name_returns_built_in():
+    p = presets.resolve("meeting_summary")
+    assert p is presets.BUILT_IN["meeting_summary"]
+
+
+def test_resolve_free_text_returns_custom():
+    p = presets.resolve("Translate to English.")
+    assert p is not None
+    assert p.is_custom is True
+    assert p.prompt == "Translate to English."

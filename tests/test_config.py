@@ -82,26 +82,24 @@ def test_require_credentials_for_ai_names_all_missing():
     assert "Telegram" in message
 
 
-def test_validate_accepts_empty_listen():
-    cfg = dict(config.DEFAULTS, listen="")
+def test_validate_accepts_empty_prompt():
+    cfg = dict(config.DEFAULTS, prompt="")
     config.validate_config(cfg)
 
 
-def test_validate_accepts_known_listen_preset():
-    cfg = dict(config.DEFAULTS, listen="meeting_summary")
+def test_validate_accepts_preset_name_prompt():
+    cfg = dict(config.DEFAULTS, prompt="meeting_summary")
     config.validate_config(cfg)
 
 
-def test_validate_rejects_unknown_listen_preset():
-    cfg = dict(config.DEFAULTS, listen="nonexistent")
-    with pytest.raises(config.ConfigError) as exc_info:
-        config.validate_config(cfg)
-    assert "listen" in str(exc_info.value)
-    assert "nonexistent" in str(exc_info.value)
+def test_validate_accepts_free_text_prompt():
+    """Non-preset text is a custom prompt; validation stays out of that call."""
+    cfg = dict(config.DEFAULTS, prompt="Translate every segment into English.")
+    config.validate_config(cfg)
 
 
-def test_validate_rejects_non_string_listen():
-    cfg = dict(config.DEFAULTS, listen=42)
+def test_validate_rejects_non_string_prompt():
+    cfg = dict(config.DEFAULTS, prompt=42)
     with pytest.raises(config.ConfigError):
         config.validate_config(cfg)
 
