@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import storage, ui
 
-FILENAME_FORMAT = "transcript-%Y%m%d-%H%M%S.txt"
+FILENAME_STEM_FORMAT = "transcript-%Y%m%d-%H%M%S"
 LINE_TIMESTAMP_FORMAT = "%H:%M:%S"
 
 
@@ -66,28 +66,12 @@ class TranscriptWriter:
     def _ensure_path(self) -> Path | None:
         if self._path is not None:
             return self._path
+        stem = self._started_at.strftime(FILENAME_STEM_FORMAT)
         try:
-            directory = storage.resolve_dir(self._save_dir)
+            path = storage.new_private_file(self._save_dir, stem)
         except (OSError, RuntimeError) as exc:
             if not self._warned_about_error:
-                ui.warn(f"Save directory unusable ({self._save_dir}): {exc}")
-                self._warned_about_error = True
-            return None
-        stem = self._started_at.strftime(FILENAME_FORMAT)
-        path = directory / stem
-        # Same-second collisions can happen when two sessions are started
-        # back to back (rare, but cheap to defend against).
-        counter = 1
-        base_stem = path.stem
-        while path.exists():
-            path = directory / f"{base_stem}_{counter}.txt"
-            counter += 1
-        try:
-            path.touch(exist_ok=False)
-            storage.restrict(path, storage.PRIVATE_FILE_MODE)
-        except OSError as exc:
-            if not self._warned_about_error:
-                ui.warn(f"Cannot create transcript file ({path}): {exc.strerror or exc}")
+                ui.warn(f"Cannot create transcript file: {exc}")
                 self._warned_about_error = True
             return None
         self._path = path

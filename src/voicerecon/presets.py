@@ -40,6 +40,11 @@ class Preset:
     description: str
     trigger: Trigger = "per_segment"
 
+    @property
+    def is_batch(self) -> bool:
+        """True when the AI fires once at Ctrl+C rather than per segment."""
+        return self.trigger == "on_shutdown"
+
 
 BUILT_IN: dict[str, Preset] = {
     "interview_candidate": Preset(

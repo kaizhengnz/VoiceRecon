@@ -121,7 +121,7 @@ def _print_presets() -> None:
         ui.info(f"  {name}")
         ui.info(f"    trigger:        {preset.trigger}")
         ui.info(f"    speaker filter: {preset.speaker_filter}")
-        if preset.trigger == "per_segment":
+        if not preset.is_batch:
             ui.info(f"    context:        {preset.context}")
         ui.info(f"    purpose:        {preset.description}")
 

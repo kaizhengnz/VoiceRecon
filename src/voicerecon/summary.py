@@ -11,14 +11,12 @@ or send a blank Telegram message.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import ai, context, notify, presets, storage, ui
-
-CREDENTIAL_KEYS = ("anthropic_api_key", "telegram_bot_token", "telegram_chat_id")
+from . import ai, config, context, notify, presets, storage, ui
 
 FILENAME_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 
@@ -26,10 +24,14 @@ FILENAME_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 def render_and_deliver(
     cfg: Mapping[str, Any],
     preset: presets.Preset,
-    history: Iterable[context.Segment],
+    history: list[context.Segment],
 ) -> None:
     """Run the shutdown AI call, save its reply to a file, and push to Telegram."""
-    segments = _filter_by_speaker(list(history), preset.speaker_filter)
+    segments = [
+        segment
+        for segment in history
+        if context.speaker_matches(segment.speaker, preset.speaker_filter)
+    ]
     if not segments:
         ui.info("No transcript content to summarize; skipping.")
         return
@@ -47,7 +49,7 @@ def render_and_deliver(
         try:
             notify.send_text(token, chat, text)
         except Exception as exc:
-            secrets = [str(cfg.get(key) or "") for key in CREDENTIAL_KEYS]
+            secrets = [str(cfg.get(key) or "") for key in config.CREDENTIAL_FIELDS]
             ui.error(
                 ui.scrub(
                     f"Telegram delivery raised: {type(exc).__name__}: {exc}", secrets
@@ -58,39 +60,23 @@ def render_and_deliver(
 def write(save_dir: str, preset_name: str, text: str) -> Path | None:
     """Write ``text`` to ``<save_dir>/<preset_name>-YYYYMMDD-HHMMSS.txt``.
 
-    Returns the path on success, or ``None`` if the directory or file could
-    not be created. Warnings are printed once via :mod:`voicerecon.ui`; the
-    caller keeps going either way.
+    Returns the path on success, or ``None`` if the file could not be
+    created or written. Warnings go through :mod:`voicerecon.ui`; the caller
+    keeps going either way.
     """
+    stem = f"{preset_name}-{datetime.now().strftime(FILENAME_TIMESTAMP_FORMAT)}"
     try:
-        directory = storage.resolve_dir(save_dir)
+        path = storage.new_private_file(save_dir, stem)
     except (OSError, RuntimeError) as exc:
-        ui.warn(f"Save directory unusable ({save_dir}): {exc}")
+        ui.warn(f"Cannot create summary file: {exc}")
         return None
-
-    stamp = datetime.now().strftime(FILENAME_TIMESTAMP_FORMAT)
-    path = directory / f"{preset_name}-{stamp}.txt"
-    counter = 1
-    base_stem = path.stem
-    while path.exists():
-        path = directory / f"{base_stem}_{counter}.txt"
-        counter += 1
 
     try:
         path.write_text(text, encoding="utf-8")
-        storage.restrict(path, storage.PRIVATE_FILE_MODE)
     except OSError as exc:
         ui.warn(f"Cannot write summary file ({path}): {exc.strerror or exc}")
         return None
     return path
-
-
-def _filter_by_speaker(
-    segments: list[context.Segment], speaker_filter: str
-) -> list[context.Segment]:
-    if speaker_filter == "both":
-        return segments
-    return [segment for segment in segments if segment.speaker == speaker_filter]
 
 
 def _call_ai(cfg: Mapping[str, Any], preset: presets.Preset, payload: str) -> str:

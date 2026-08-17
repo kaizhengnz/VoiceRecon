@@ -75,7 +75,7 @@ def assemble(
             continue
         if segment.end > trigger.end:
             continue
-        if not _speaker_matches(segment.speaker, speaker_filter):
+        if not speaker_matches(segment.speaker, speaker_filter):
             continue
         keep.append(segment)
     # The trigger is always the last segment we send; if the caller did not
@@ -85,7 +85,8 @@ def assemble(
     return keep
 
 
-def _speaker_matches(speaker: str, filter_value: str) -> bool:
+def speaker_matches(speaker: str, filter_value: str) -> bool:
+    """Whether ``speaker`` passes the preset's speaker filter."""
     if filter_value == "both":
         return True
     return speaker == filter_value

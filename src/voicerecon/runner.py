@@ -24,22 +24,19 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from . import ai, audio, context, notify, presets, segmenter, stt, summary, transcript, ui, vad
-
-CREDENTIAL_KEYS = ("anthropic_api_key", "telegram_bot_token", "telegram_chat_id")
+from . import ai, audio, config, context, notify, presets, segmenter, stt, summary, transcript, ui, vad
 
 MAX_HISTORY = 200
 """Cap on retained ready segments used to build ``window:N`` context. At the
 longest configured window (5 min ≈ 60 short utterances) 200 is comfortable.
-The cap is skipped when the selected preset uses ``on_shutdown`` — that
-path needs the full session, and 200 utterances would truncate long
-meetings."""
+Suspended when the active preset is batch — the shutdown path needs the
+full session or a long meeting gets truncated."""
 
 DRAIN_INTERVAL_SECONDS = 0.1
 
 
 def _secrets(cfg: Mapping[str, Any]) -> list[str]:
-    return [str(cfg.get(key) or "") for key in CREDENTIAL_KEYS]
+    return [str(cfg.get(key) or "") for key in config.CREDENTIAL_FIELDS]
 
 
 def run(cfg: Mapping[str, Any], preset_name: str | None) -> int:
@@ -90,7 +87,7 @@ def run(cfg: Mapping[str, Any], preset_name: str | None) -> int:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
         ui.info(f"Mode: --listen {preset.name} — {preset.description}")
-        if preset.trigger == "on_shutdown":
+        if preset.is_batch:
             ui.info(f"  speaker filter: {preset.speaker_filter}   trigger: on shutdown (Ctrl+C)")
         else:
             ui.info(f"  speaker filter: {preset.speaker_filter}   context: {preset.context}")
@@ -115,7 +112,7 @@ def run(cfg: Mapping[str, Any], preset_name: str | None) -> int:
         remaining = seg.flush(time.monotonic())
         for item in remaining:
             _process_segment(cfg, item, preset, writer, transcriber, history)
-        if preset is not None and preset.trigger == "on_shutdown":
+        if preset is not None and preset.is_batch:
             summary.render_and_deliver(cfg, preset, history)
         if writer.path is not None:
             ui.info(f"Transcript saved to {writer.path}")
@@ -142,15 +139,12 @@ def _process_segment(
         speaker=item.speaker, text=text, end=item.ended_at
     )
     history.append(ctx_segment)
-    if preset is None or preset.trigger == "per_segment":
-        if len(history) > MAX_HISTORY:
-            del history[: len(history) - MAX_HISTORY]
+    if (preset is None or not preset.is_batch) and len(history) > MAX_HISTORY:
+        del history[:-MAX_HISTORY]
 
-    if preset is None:
+    if preset is None or preset.is_batch:
         return
-    if preset.trigger == "on_shutdown":
-        return
-    if not _speaker_matches(item.speaker, preset.speaker_filter):
+    if not context.speaker_matches(item.speaker, preset.speaker_filter):
         return
 
     payload_segments = context.assemble(
@@ -183,7 +177,3 @@ def _process_segment(
             )
 
 
-def _speaker_matches(speaker: str, filter_value: str) -> bool:
-    if filter_value == "both":
-        return True
-    return speaker == filter_value
