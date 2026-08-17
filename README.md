@@ -105,6 +105,7 @@ Custom prompts are streaming (per-segment) only — for an end-of-session summar
   "whisper_model_size": "small",
   "input_device": "",
   "loopback_device": "",
+  "listen": "",
   "model": "claude-haiku-4-5",
   "anthropic_api_key": "",
   "telegram_bot_token": "",
@@ -114,7 +115,9 @@ Custom prompts are streaming (per-segment) only — for an end-of-session summar
 
 `input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by index, marks the one an empty field resolves to, and accepts an index or a device name — partial names match; `0` clears a pinned device back to the system default.
 
-The three credential fields are only required when using `--listen <preset>` or `--prompt "..."`. Transcript-only mode works with them all empty.
+`listen` names the default preset used when you run `voicerecon` with no `--listen` and no `--prompt`. Set it to `interview_candidate`, `interview_recruiter`, or `meeting_summary`; leave it empty to default to transcript-only. `--configure` picks it via a numbered menu (including a "none" entry). CLI flags always win: `--listen X` and `--prompt "..."` override the configured default per invocation.
+
+The three credential fields are only required when using `--listen <preset>` or `--prompt "..."` — or when `listen` is set to a preset in the config. Transcript-only mode works with them all empty.
 
 ## Transcript file format
 

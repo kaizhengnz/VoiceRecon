@@ -112,6 +112,7 @@ def _print_show(cfg: dict) -> None:
     ui.info(f"  Whisper model:         {cfg['whisper_model_size']}")
     ui.info(f"  Input device:          {cfg.get('input_device') or '(default)'}")
     ui.info(f"  Loopback device:       {cfg.get('loopback_device') or '(default)'}")
+    ui.info(f"  Default preset:        {cfg.get('listen') or '(none — transcript only)'}")
     ui.info(f"  AI model:              {cfg['model']}")
     ui.info(f"  Anthropic key:         {ui.mask(str(cfg['anthropic_api_key']))}")
     ui.info(f"  Telegram bot:          {ui.mask(str(cfg['telegram_bot_token']))}")
@@ -205,6 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg = config.load(args.config_path)
 
         preset: presets.Preset | None = None
+        # Precedence: --listen > --prompt > cfg["listen"] > transcript-only.
+        default_listen = str(cfg.get("listen") or "").strip()
         if args.listen:
             try:
                 preset = presets.get(args.listen)
@@ -220,6 +223,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context_spec=args.context_spec or "current",
                 )
             except ValueError as exc:
+                ui.error(str(exc))
+                return 1
+            config.require_credentials_for_ai(cfg)
+        elif default_listen:
+            try:
+                preset = presets.get(default_listen)
+            except KeyError as exc:
                 ui.error(str(exc))
                 return 1
             config.require_credentials_for_ai(cfg)

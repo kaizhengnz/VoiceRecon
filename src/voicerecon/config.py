@@ -44,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "whisper_model_size": DEFAULT_WHISPER_SIZE,
     "input_device": "",  # empty = default microphone
     "loopback_device": "",  # empty = default speaker's loopback
+    "listen": "",  # empty = transcript-only; else name of a built-in preset
     "model": DEFAULT_MODEL,
     "anthropic_api_key": "",
     "telegram_bot_token": "",
@@ -171,6 +172,18 @@ def validate_config(cfg: dict[str, Any]) -> None:
         if value is not None and not isinstance(value, str):
             raise ConfigError(f"Config field {field!r} must be a string")
 
+    listen = cfg.get("listen")
+    if listen is not None and not isinstance(listen, str):
+        raise ConfigError(f"Config field 'listen' must be a string, got {listen!r}")
+    if isinstance(listen, str) and listen.strip():
+        # Lazy import: presets already imports config at load time indirectly.
+        from . import presets
+        if listen.strip() not in presets.BUILT_IN:
+            known = ", ".join(sorted(presets.BUILT_IN))
+            raise ConfigError(
+                f"Config field 'listen' must be empty or one of {known}; got {listen!r}"
+            )
+
     for field in CREDENTIAL_FIELDS:
         value = cfg.get(field)
         if value is not None and not isinstance(value, str):
@@ -191,8 +204,7 @@ def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
     if missing:
         raise ConfigError(
             "AI mode needs: " + ", ".join(missing) + ".\n"
-            "Run 'voicerecon --configure' to set them, or run without "
-            "--listen / --prompt for transcript-only mode."
+            "Run 'voicerecon --configure' to set them."
         )
 
 
@@ -319,6 +331,23 @@ def _ask_choice(
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
+def _ask_listen(current: str) -> str:
+    """Pick the default AI preset (or none) — value stored in ``cfg["listen"]``."""
+    from . import presets  # lazy: keeps --help free of the presets import
+
+    options: list[tuple[str, str, str]] = [
+        (name, name, presets.BUILT_IN[name].description)
+        for name in sorted(presets.BUILT_IN)
+    ]
+    options.append(("(none)", "", "run without AI — transcript only"))
+    for _ in range(MAX_PROMPT_RETRIES):
+        chosen = _ask_choice("Default preset", options, current)
+        if chosen == "" or chosen in presets.BUILT_IN:
+            return chosen
+        ui.warn(f"Preset {chosen!r} does not exist; pick a numbered option or leave empty.")
+    raise WizardAborted("Default preset: too many invalid answers, giving up.")
+
+
 def _ask_whisper_size(current: str) -> str:
     ui.info("   Whisper model size (bigger = more accurate, more RAM, slower):")
     presets = [(size, size, note) for size, note in WHISPER_SIZES]
@@ -435,6 +464,12 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     cfg["anthropic_api_key"] = _ask("Anthropic API key", cfg["anthropic_api_key"], secret=True)
     cfg["telegram_bot_token"] = _ask("Telegram bot token", cfg["telegram_bot_token"], secret=True)
     cfg["telegram_chat_id"] = _ask("Telegram chat ID", cfg["telegram_chat_id"], secret=True)
+
+    ui.info(
+        "\n6) Default preset (used when you run 'voicerecon' with no --listen / --prompt;"
+        " pick (none) for transcript-only default)"
+    )
+    cfg["listen"] = _ask_listen(str(cfg.get("listen") or ""))
 
     has_ai = bool(str(cfg["anthropic_api_key"]).strip())
     has_tg = bool(str(cfg["telegram_bot_token"]).strip() and str(cfg["telegram_chat_id"]).strip())
