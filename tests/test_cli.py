@@ -46,6 +46,32 @@ def test_prompt_with_show_rejects(capsys):
         cli.main(["--prompt", "translate", "--show"])
 
 
+def test_bare_prompt_with_show_rejects(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--prompt", "--show"])
+
+
+def test_bare_prompt_runs_setter(tmp_path, monkeypatch):
+    called: dict = {}
+
+    def fake_setter(path):
+        called["path"] = path
+        return 0
+
+    monkeypatch.setattr("voicerecon.config.run_set_prompt", fake_setter)
+    rc = cli.main(["--config", "some/path", "--prompt"])
+    assert rc == 0
+    assert called["path"] == "some/path"
+
+
+def test_bare_prompt_refuses_when_no_config_exists(tmp_path, capsys):
+    missing = tmp_path / "no.json"
+    rc = cli.main(["--config", str(missing), "--prompt"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "No config" in (captured.err + captured.out)
+
+
 def test_show_reports_missing_config(tmp_path, capsys):
     missing = tmp_path / "no.json"
     rc = cli.main(["--show", "--config", str(missing)])

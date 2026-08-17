@@ -377,6 +377,46 @@ def _ask_device(
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
+def run_set_prompt(path: str | os.PathLike[str] | None = None) -> int:
+    """Mini-wizard for ``cfg["prompt"]`` alone; leaves every other field alone."""
+    resolved = config_path(path)
+    raw = read_raw(resolved)
+    if not raw:
+        ui.error(
+            f"No config at {resolved}. Run 'voicerecon --configure' first "
+            "to create one."
+        )
+        return 1
+
+    ui.rule("VoiceRecon set default prompt")
+    ui.info(f"Config file: {resolved}")
+    try:
+        raw["prompt"] = _ask_default_prompt(str(raw.get("prompt") or ""))
+    except WizardAborted as exc:
+        ui.error(str(exc))
+        ui.error("Nothing was saved.")
+        return 1
+    except KeyboardInterrupt:
+        print()
+        ui.info("Cancelled. Nothing was saved.")
+        return 130
+
+    try:
+        validate_config(merge_defaults(raw))
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 1
+
+    try:
+        saved_to = save(raw, resolved)
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 1
+    ui.rule()
+    ui.info(f"Saved to {saved_to}")
+    return 0
+
+
 def run_wizard(path: str | os.PathLike[str] | None = None) -> int:
     try:
         return _run_wizard(path)

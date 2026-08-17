@@ -18,6 +18,7 @@ examples:
   voicerecon --prompt "translate every segment into English"
                                    run once with a custom prompt (defaults to
                                    filter=them, context=current, streaming)
+  voicerecon --prompt              mini-wizard to change cfg['prompt'] only
   voicerecon --configure           first-time interactive setup
   voicerecon --show                print the current config (credentials masked)
   voicerecon --show-devices        list detected audio input / loopback devices
@@ -39,11 +40,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt",
         metavar="VALUE",
+        nargs="?",
         default=None,
+        const=True,
         help=(
-            "run with this prompt for one session (overrides cfg['prompt']); "
-            "VALUE that matches a built-in preset name is used as that preset, "
-            "any other text is used as a custom streaming prompt"
+            "with VALUE: run with that prompt for one session (overrides "
+            "cfg['prompt']); VALUE that matches a built-in preset name is used "
+            "as that preset, any other text is used as a custom streaming "
+            "prompt. Without VALUE: run a mini-wizard to change cfg['prompt'] "
+            "and exit"
         ),
     )
     parser.add_argument(
@@ -165,6 +170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.configure:
             return config.run_wizard(args.config_path)
 
+        if args.prompt is True:
+            return config.run_set_prompt(args.config_path)
+
         if args.show:
             path = config.config_path(args.config_path)
             raw = config.read_raw(path)
@@ -180,8 +188,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         cfg = config.load(args.config_path)
 
-        # --prompt overrides cfg["prompt"].
-        raw_value = args.prompt if args.prompt is not None else str(cfg.get("prompt") or "")
+        # --prompt overrides cfg["prompt"]. Bare --prompt (setter mode) was
+        # handled above before we even loaded the runtime config.
+        raw_value = args.prompt if isinstance(args.prompt, str) else str(cfg.get("prompt") or "")
         try:
             preset: presets.Preset | None = presets.resolve(raw_value)
         except ValueError as exc:
