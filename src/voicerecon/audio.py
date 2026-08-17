@@ -4,6 +4,16 @@ Windows and Linux expose system-audio loopback as an input device
 automatically (WASAPI loopback / PulseAudio monitor). macOS does not; the
 user must install BlackHole and select it as the loopback input.
 
+Mic capture uses ``sounddevice`` (PortAudio) because ``soundcard``'s
+Windows backend asserts a ``WAVEFORMATEXTENSIBLE`` mix format that many
+consumer mics do not report, and crashes the capture thread on
+``mic.recorder()``. Loopback capture stays on ``soundcard`` because
+PortAudio's stock builds do not expose WASAPI loopback / PulseAudio
+monitors as input devices. Device enumeration also stays on ``soundcard``
+— the crash is in ``.recorder()``, not in listing, and keeping one name
+namespace means the wizard shows exactly the string that later selects
+the device.
+
 The capture threads run inside :class:`AudioSource` context managers.
 Each source resamples to 16 kHz mono float32 and pushes numpy arrays to a
 user-supplied callback along with a monotonic timestamp taken at the end
@@ -86,8 +96,21 @@ class AudioSource:
         self.close()
 
     def _run(self) -> None:
-        recorder_cm = self._resolve_recorder()
-        with recorder_cm as recorder:
+        from . import ui
+        try:
+            recorder_cm = self._resolve_recorder()
+            recorder = recorder_cm.__enter__()
+        except Exception as exc:
+            # Report cleanly so a daemon-thread traceback doesn't hide the
+            # fact that this side of the conversation stopped transcribing.
+            ui.error(
+                f"{self.kind} capture failed to start "
+                f"({type(exc).__name__}): {exc}. "
+                f"This side of the conversation will not be transcribed."
+            )
+            return
+
+        try:
             while not self._stop.is_set():
                 try:
                     block = recorder.record(numframes=BLOCK_SAMPLES)
@@ -101,10 +124,14 @@ class AudioSource:
                     # runner has no other way to notice, and it would silently
                     # stop transcribing this side of the conversation. Log
                     # once, then keep going.
-                    from . import ui
                     if not self._reported_failure:
                         ui.warn(f"{self.kind} capture error ({type(exc).__name__}): {exc}")
                         self._reported_failure = True
+        finally:
+            try:
+                recorder_cm.__exit__(None, None, None)
+            except Exception as exc:
+                ui.warn(f"{self.kind} recorder cleanup failed ({type(exc).__name__}): {exc}")
 
     def _resolve_recorder(self) -> Any:
         if self._recorder_factory is not None:
@@ -114,8 +141,12 @@ class AudioSource:
                 samplerate=vad.TARGET_SAMPLE_RATE,
                 channels=1,
             )
-        return _soundcard_recorder(
-            kind=self.kind,
+        if self.kind == "mic":
+            return _sounddevice_mic_recorder(
+                device_name=self.device_name,
+                samplerate=vad.TARGET_SAMPLE_RATE,
+            )
+        return _soundcard_loopback_recorder(
             device_name=self.device_name,
             samplerate=vad.TARGET_SAMPLE_RATE,
         )
@@ -129,10 +160,10 @@ def _to_mono_float32(block: np.ndarray) -> np.ndarray:
     return np.asarray(block, dtype=np.float32)
 
 
-def _soundcard_recorder(
-    *, kind: str, device_name: str | None, samplerate: int
+def _soundcard_loopback_recorder(
+    *, device_name: str | None, samplerate: int
 ) -> Any:
-    """Return a context manager producing a soundcard recorder object.
+    """Context manager producing a soundcard recorder for a loopback source.
 
     Loopback on Windows and Linux is exposed by ``all_microphones(include_loopback=True)``;
     the recorder for the default speaker's monitor is picked by
@@ -140,11 +171,98 @@ def _soundcard_recorder(
     """
     import soundcard as sc  # type: ignore[import-not-found]
 
-    if kind == "mic":
-        mic = sc.get_microphone(device_name) if device_name else sc.default_microphone()
-    else:
-        mic = _pick_loopback(sc, device_name)
+    mic = _pick_loopback(sc, device_name)
     return mic.recorder(samplerate=samplerate, channels=1)
+
+
+def _import_sounddevice() -> Any:
+    """Import :mod:`sounddevice`, working around a Windows-on-ARM issue.
+
+    An x86_64 Python running under emulation on Windows-on-ARM reports
+    ``platform.machine() == 'ARM64'`` because that's the OS's native
+    architecture, but the process itself is x86_64. ``sounddevice``'s
+    module-level DLL picker only looks at ``platform.machine()`` and
+    picks ``libportaudioarm64.dll`` — which an x86_64 process cannot
+    load. We patch ``platform.machine`` for the duration of the import
+    so the picker lands on ``libportaudio64bit.dll`` (already bundled
+    in the wheel), then restore it. Only runs the first time we import
+    ``sounddevice``; every later call returns the cached module.
+    """
+    import sys
+
+    if "sounddevice" in sys.modules:
+        return sys.modules["sounddevice"]
+
+    import platform as _platform
+
+    if (
+        sys.platform == "win32"
+        and _platform.machine().lower() in ("arm64", "aarch64")
+    ):
+        original = _platform.machine
+        _platform.machine = lambda: "AMD64"  # type: ignore[assignment]
+        try:
+            import sounddevice as sd  # type: ignore[import-not-found]
+        finally:
+            _platform.machine = original  # type: ignore[assignment]
+        return sd
+
+    import sounddevice as sd  # type: ignore[import-not-found]
+    return sd
+
+
+def _sounddevice_mic_recorder(
+    *, device_name: str | None, samplerate: int
+) -> Any:
+    """Context manager producing a PortAudio-backed mic recorder.
+
+    ``sounddevice.InputStream`` accepts ``device=None`` (default input),
+    an int index, or a name substring that PortAudio resolves fuzzily.
+    We pass the name substring straight through so the wizard's soundcard
+    names — the ones the user actually saw and picked — still work.
+    """
+    return _MicRecorder(device_name=device_name, samplerate=samplerate)
+
+
+class _MicRecorder:
+    """Adapter that gives ``sounddevice.InputStream`` the same shape as
+    ``soundcard``'s recorder: a context manager yielding an object with a
+    ``.record(numframes=...)`` method that returns a numpy float32 block.
+
+    The underlying stream is created (and started) on ``__enter__`` so
+    that a bad device name raises there — :meth:`AudioSource._run`
+    catches that path and reports a user-facing error instead of dumping
+    a traceback from a daemon thread.
+    """
+
+    def __init__(self, *, device_name: str | None, samplerate: int) -> None:
+        self._device: str | None = device_name or None
+        self._samplerate = samplerate
+        self._stream: Any = None
+
+    def __enter__(self) -> _MicRecorder:
+        sd = _import_sounddevice()
+        self._stream = sd.InputStream(
+            device=self._device,
+            samplerate=self._samplerate,
+            channels=1,
+            dtype="float32",
+        )
+        self._stream.__enter__()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._stream is None:
+            return
+        try:
+            self._stream.__exit__(*exc_info)
+        finally:
+            self._stream = None
+
+    def record(self, numframes: int) -> np.ndarray:
+        assert self._stream is not None, "record() before __enter__()"
+        data, _overflowed = self._stream.read(numframes)
+        return data
 
 
 def _pick_loopback(sc: Any, device_name: str | None) -> Any:
@@ -165,9 +283,10 @@ def enumerate_devices() -> dict[str, Any]:
     """List currently visible input and loopback device names.
 
     Keys: ``input`` and ``loopback`` hold the name lists, ``default_input``
-    and ``default_loopback`` name the entry an empty config field resolves
-    to (the same choices :func:`_soundcard_recorder` and
-    :func:`_pick_loopback` make), or ``""`` when that cannot be determined.
+    is the OS default microphone name (informational — the mic recorder
+    lets PortAudio pick the default when the config field is blank),
+    ``default_loopback`` is the entry that :func:`_pick_loopback` lands on
+    for a blank field, or ``""`` when that cannot be determined.
 
     Used by ``--configure`` and the ``--show-devices`` diagnostic to help
     the user pick the right one. Never raises: import / query failures

@@ -1,7 +1,8 @@
-"""Device enumeration and its display formatting.
+"""Device enumeration, its display formatting, and mic-recorder wiring.
 
 Real capture hardware is never touched: a fake ``soundcard`` module is
-installed in ``sys.modules`` so enumeration runs against known names.
+installed in ``sys.modules`` so enumeration runs against known names, and
+a fake ``sounddevice`` module drives the mic recorder tests.
 """
 
 from __future__ import annotations
@@ -10,7 +11,9 @@ import builtins
 import sys
 import types
 
-from voicerecon import audio
+import numpy as np
+
+from voicerecon import audio, ui
 
 
 class _FakeMic:
@@ -139,3 +142,111 @@ def test_format_device_lines_numbers_and_marks_default():
 
 def test_format_device_lines_marks_nothing_when_default_unknown():
     assert audio.format_device_lines(["Webcam Mic"], "") == ["1) Webcam Mic"]
+
+
+# --------------------------------------------------------------------------- #
+# Mic recorder (sounddevice) tests
+# --------------------------------------------------------------------------- #
+
+
+class _FakeInputStream:
+    def __init__(self, *, device, samplerate, channels, dtype):
+        self.device = device
+        self.samplerate = samplerate
+        self.channels = channels
+        self.dtype = dtype
+        self.entered = False
+        self.exited = False
+        self.reads: list[int] = []
+
+    def __enter__(self):
+        self.entered = True
+        return self
+
+    def __exit__(self, *exc_info):
+        self.exited = True
+        return False
+
+    def read(self, frames):
+        self.reads.append(frames)
+        return np.zeros((frames, 1), dtype=np.float32), False
+
+
+def _install_fake_sounddevice(monkeypatch, created: list[_FakeInputStream]) -> None:
+    module = types.ModuleType("sounddevice")
+
+    def InputStream(**kwargs):
+        stream = _FakeInputStream(**kwargs)
+        created.append(stream)
+        return stream
+
+    module.InputStream = InputStream  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sounddevice", module)
+
+
+def test_mic_recorder_opens_default_input_when_no_device_name(monkeypatch):
+    created: list[_FakeInputStream] = []
+    _install_fake_sounddevice(monkeypatch, created)
+
+    recorder_cm = audio._sounddevice_mic_recorder(device_name=None, samplerate=16000)
+    with recorder_cm as recorder:
+        block = recorder.record(numframes=512)
+
+    assert len(created) == 1
+    stream = created[0]
+    assert stream.device is None
+    assert stream.samplerate == 16000
+    assert stream.channels == 1
+    assert stream.dtype == "float32"
+    assert stream.entered and stream.exited
+    assert stream.reads == [512]
+    assert block.shape == (512, 1)
+
+
+def test_mic_recorder_passes_device_name_substring(monkeypatch):
+    created: list[_FakeInputStream] = []
+    _install_fake_sounddevice(monkeypatch, created)
+
+    with audio._sounddevice_mic_recorder(
+        device_name="Microphone Array (Realtek)", samplerate=16000
+    ):
+        pass
+
+    assert created[0].device == "Microphone Array (Realtek)"
+
+
+def test_mic_recorder_treats_empty_device_name_as_default(monkeypatch):
+    """An empty ``input_device`` in config must not become an empty
+    substring match (sounddevice would then match nothing)."""
+    created: list[_FakeInputStream] = []
+    _install_fake_sounddevice(monkeypatch, created)
+
+    with audio._sounddevice_mic_recorder(device_name="", samplerate=16000):
+        pass
+
+    assert created[0].device is None
+
+
+# --------------------------------------------------------------------------- #
+# AudioSource error handling
+# --------------------------------------------------------------------------- #
+
+
+def test_audio_source_reports_when_recorder_creation_fails(monkeypatch):
+    errors: list[str] = []
+    monkeypatch.setattr(ui, "error", lambda msg: errors.append(msg))
+
+    def boom(**kwargs):
+        raise RuntimeError("no such device")
+
+    src = audio.AudioSource(
+        kind="mic",
+        device_name=None,
+        callback=lambda block, ts: None,
+        recorder_factory=boom,
+    )
+    src.open()
+    # The capture thread should exit almost immediately; close() joins it.
+    src.close(timeout=2.0)
+
+    assert any("mic capture failed to start" in msg for msg in errors), errors
