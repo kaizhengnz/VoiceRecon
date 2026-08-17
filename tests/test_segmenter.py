@@ -1,4 +1,4 @@
-"""Segmenter cutting logic: silence threshold + speaker-change preemption."""
+"""Segmenter cutting logic: silence threshold + loopback-priority preemption."""
 
 from __future__ import annotations
 

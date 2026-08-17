@@ -103,8 +103,15 @@ class Segmenter:
             "them": PendingSegment("them"),
         }
         self._ready: deque[ReadySegment] = deque()
-        self._loopback_active = False
         self._lock = threading.Lock()
+
+    @property
+    def _loopback_active(self) -> bool:
+        return self._pending["them"].active
+
+    def _emit(self, cut: ReadySegment | None) -> None:
+        if cut is not None:
+            self._ready.append(cut)
 
     def on_audio(self, speaker: str, samples: np.ndarray) -> None:
         """Push audio for the currently-active segment on ``speaker``.
@@ -133,33 +140,19 @@ class Segmenter:
                     self._handle_end(speaker, event.timestamp)
 
     def _handle_start(self, speaker: str, timestamp: float) -> None:
-        if speaker == "them":
-            # Loopback owns the timeline: cut any pending mic segment and
-            # mark the loopback-active window that suppresses mic events.
-            self._loopback_active = True
-            me_pending = self._pending["me"]
-            if me_pending.active:
-                cut = me_pending.cut(timestamp)
-                if cut is not None:
-                    self._ready.append(cut)
-            self._pending["them"].start(timestamp)
-        else:  # speaker == "me"
+        if speaker == "me":
             if self._loopback_active:
                 return
             self._pending["me"].start(timestamp)
+            return
+        # speaker == "them": loopback preempts any pending mic segment.
+        self._emit(self._pending["me"].cut(timestamp))
+        self._pending["them"].start(timestamp)
 
     def _handle_end(self, speaker: str, timestamp: float) -> None:
-        if speaker == "them":
-            self._loopback_active = False
-            cut = self._pending["them"].cut(timestamp)
-            if cut is not None:
-                self._ready.append(cut)
+        if speaker == "me" and self._loopback_active:
             return
-        if self._loopback_active:
-            return
-        cut = self._pending["me"].cut(timestamp)
-        if cut is not None:
-            self._ready.append(cut)
+        self._emit(self._pending[speaker].cut(timestamp))
 
     def drain(self) -> list[ReadySegment]:
         """Pop every segment that is ready right now."""
@@ -172,9 +165,7 @@ class Segmenter:
         """Cut whatever is still open (used on graceful shutdown)."""
         with self._lock:
             for pending in self._pending.values():
-                cut = pending.cut(timestamp)
-                if cut is not None:
-                    self._ready.append(cut)
+                self._emit(pending.cut(timestamp))
             items = list(self._ready)
             self._ready.clear()
         return items
