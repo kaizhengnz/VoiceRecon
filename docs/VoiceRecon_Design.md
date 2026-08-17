@@ -23,7 +23,7 @@ The design goals mirror ScreenRecon:
 ```
 ┌────────────────────────┐   ┌────────────────────────┐
 │ AudioSource (mic)      │   │ AudioSource (loopback) │
-│  soundcard recorder    │   │  soundcard recorder    │
+│  sounddevice/PortAudio │   │  soundcard recorder    │
 │  → 16 kHz mono float32 │   │  → 16 kHz mono float32 │
 └─────────┬──────────────┘   └───────────┬────────────┘
           │  block + monotonic ts        │
@@ -117,7 +117,7 @@ Credentials are optional at load time; `require_credentials_for_ai` is the singl
 
 ## 7. Platform notes
 
-- **Windows** — `soundcard` exposes each speaker's WASAPI loopback as a normal input device automatically. Zero setup after `pip install`.
+- **Windows** — `soundcard` exposes each speaker's WASAPI loopback as a normal input device automatically. Zero setup after `pip install`. Mic capture routes through `sounddevice` (PortAudio) instead of `soundcard`: `soundcard`'s Windows backend asserts a `WAVEFORMATEXTENSIBLE` mix format that many consumer mics do not report, and crashes the capture thread on `mic.recorder()`. PortAudio negotiates the format itself and works with the same devices unmodified.
 - **Linux** — Same mechanism via PulseAudio / PipeWire monitor sources. Zero setup on distros with a working audio stack.
 - **macOS** — CoreAudio does not expose loopback. Users must install [BlackHole](https://existential.audio/blackhole/) and pick it as `loopback_device`. See README §"macOS extra step" for the full procedure.
 
