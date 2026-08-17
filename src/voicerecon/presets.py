@@ -22,10 +22,10 @@ touched.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Literal
 
-SPEAKER_FILTERS: tuple[str, ...] = ("both", "them", "me")
 SpeakerFilter = Literal["both", "them", "me"]
 Trigger = Literal["per_segment", "on_shutdown"]
 
@@ -106,39 +106,55 @@ def names() -> list[str]:
     return sorted(BUILT_IN)
 
 
+def resolve(value: str, *, trigger_override: str = "") -> Preset | None:
+    """Turn one string into a Preset (built-in match), custom preset, or None.
+
+    ``trigger_override`` (from ``cfg["prompt_trigger"]``) overrides the
+    baked-in trigger on a built-in preset when set to ``per_segment`` or
+    ``on_shutdown``, and picks the trigger for a custom prompt. Empty
+    means "use the preset's built-in default, or ``per_segment`` for a
+    custom prompt".
+
+    Ambiguity: a custom prompt that happens to equal a built-in name
+    resolves as the built-in.
+    """
+    stripped = (value or "").strip()
+    if not stripped:
+        return None
+    override: Trigger | None = None
+    if trigger_override in ("per_segment", "on_shutdown"):
+        override = trigger_override  # type: ignore[assignment]
+    if stripped in BUILT_IN:
+        preset = BUILT_IN[stripped]
+        if override is not None and override != preset.trigger:
+            return dataclasses.replace(preset, trigger=override)
+        return preset
+    return make_custom(stripped, trigger=override or "per_segment")
+
+
 _CUSTOM_NAME = "custom"
 _DESCRIPTION_MAX_LEN = 60
 
 
-def make_custom(
-    prompt: str, *, speaker_filter: SpeakerFilter = "them", context_spec: str = "current"
-) -> Preset:
-    """Build an ad-hoc streaming preset from user-supplied CLI values.
+def make_custom(prompt: str, *, trigger: Trigger = "per_segment") -> Preset:
+    """Build an ad-hoc preset from a free-form prompt string.
 
-    Raises ``ValueError`` when the prompt is empty, the speaker filter is
-    outside ``them/me/both``, or the context spec cannot be parsed. Batch
-    (``on_shutdown``) is not offered via this path — the built-in
-    ``meeting_summary`` preset is the sole way to get end-of-session
-    summarization.
+    Filter defaults follow trigger (``per_segment`` → ``them``,
+    ``on_shutdown`` → ``both``) so batch custom prompts see everyone's
+    speech and streaming custom prompts only respond to the other party
+    unless the user picks a built-in preset for something else.
     """
-    from . import context  # local import avoids a cycle at module load
-
     cleaned = (prompt or "").strip()
     if not cleaned:
-        raise ValueError("--prompt requires non-empty text")
-    if speaker_filter not in SPEAKER_FILTERS:
-        raise ValueError(
-            f"speaker filter must be one of {'/'.join(SPEAKER_FILTERS)}; "
-            f"got {speaker_filter!r}"
-        )
-    context.parse(context_spec)
-
+        raise ValueError("prompt requires non-empty text")
+    speaker_filter: SpeakerFilter = "both" if trigger == "on_shutdown" else "them"
     return Preset(
         name=_CUSTOM_NAME,
         speaker_filter=speaker_filter,
-        context=context_spec,
+        context="current",
         prompt=cleaned,
         description=_summarize_prompt(cleaned),
+        trigger=trigger,
     )
 
 

@@ -81,11 +81,10 @@ def write(save_dir: str, preset_name: str, text: str) -> Path | None:
 
 def _call_ai(cfg: Mapping[str, Any], preset: presets.Preset, payload: str) -> str:
     ui.rule(f"AI [{preset.name}]")
-    reply = ai.ask_streaming(
-        cfg, preset.prompt, payload, lambda chunk: print(chunk, end="", flush=True)
-    )
+    printer = ui.SentenceStreamPrinter()
+    reply = ai.ask_streaming(cfg, preset.prompt, payload, printer.push)
     if reply.ok:
-        print(flush=True)
+        printer.flush()
         return reply.text
     text = f"(AI failed) {reply.text}"
     ui.info(text)

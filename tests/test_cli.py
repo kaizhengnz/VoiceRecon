@@ -41,9 +41,35 @@ def test_configure_and_show_are_mutually_exclusive(capsys):
         cli.main(["--configure", "--show"])
 
 
-def test_listen_with_show_rejects(capsys):
+def test_prompt_with_show_rejects(capsys):
     with pytest.raises(SystemExit):
-        cli.main(["--listen", "interview_candidate", "--show"])
+        cli.main(["--prompt", "translate", "--show"])
+
+
+def test_bare_prompt_with_show_rejects(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--prompt", "--show"])
+
+
+def test_bare_prompt_runs_setter(tmp_path, monkeypatch):
+    called: dict = {}
+
+    def fake_setter(path):
+        called["path"] = path
+        return 0
+
+    monkeypatch.setattr("voicerecon.config.run_set_prompt", fake_setter)
+    rc = cli.main(["--config", "some/path", "--prompt"])
+    assert rc == 0
+    assert called["path"] == "some/path"
+
+
+def test_bare_prompt_refuses_when_no_config_exists(tmp_path, capsys):
+    missing = tmp_path / "no.json"
+    rc = cli.main(["--config", str(missing), "--prompt"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "No config" in (captured.err + captured.out)
 
 
 def test_show_reports_missing_config(tmp_path, capsys):
@@ -54,32 +80,7 @@ def test_show_reports_missing_config(tmp_path, capsys):
     assert "No config" in (captured.err + captured.out)
 
 
-def test_listen_and_prompt_are_mutually_exclusive(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["--listen", "interview_candidate", "--prompt", "translate"])
-
-
-def test_prompt_with_show_rejects(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["--prompt", "translate", "--show"])
-
-
-def test_from_without_prompt_rejects(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["--from", "them"])
-
-
-def test_context_without_prompt_rejects(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["--context", "current"])
-
-
-def test_from_with_invalid_speaker_rejects(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["--prompt", "translate", "--from", "everybody"])
-
-
-def _write_valid_config(tmp_path, *, with_credentials: bool = True) -> str:
+def _write_valid_config(tmp_path, *, with_credentials: bool = True, **overrides) -> str:
     payload = dict(config.DEFAULTS, save_dir=str(tmp_path / "voicerecon"))
     if with_credentials:
         payload.update(
@@ -87,13 +88,13 @@ def _write_valid_config(tmp_path, *, with_credentials: bool = True) -> str:
             telegram_bot_token="token",
             telegram_chat_id="chat",
         )
+    payload.update(overrides)
     path = tmp_path / "config.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
 
 
-def test_prompt_builds_custom_preset_and_calls_runner(tmp_path, monkeypatch, capsys):
-    config_path = _write_valid_config(tmp_path)
+def _record_run(monkeypatch) -> dict:
     captured: dict = {}
 
     def fake_run(cfg, preset):
@@ -102,56 +103,114 @@ def test_prompt_builds_custom_preset_and_calls_runner(tmp_path, monkeypatch, cap
         return 0
 
     monkeypatch.setattr("voicerecon.runner.run", fake_run)
+    return captured
 
-    rc = cli.main(
-        ["--prompt", "Translate to English", "--from", "me", "--context", "window:60", "--config", config_path]
-    )
+
+def test_cli_prompt_with_preset_name_uses_that_preset(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path)
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--prompt", "meeting_summary", "--config", config_path])
+    assert rc == 0
+    assert captured["preset"] is not None
+    assert captured["preset"].name == "meeting_summary"
+    assert captured["preset"].is_batch is True
+
+
+def test_cli_prompt_with_free_text_becomes_custom(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path)
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--prompt", "Translate to English", "--config", config_path])
     assert rc == 0
     preset = captured["preset"]
     assert preset is not None
-    assert preset.name == "custom"
-    assert preset.speaker_filter == "me"
-    assert preset.context == "window:60"
+    assert preset.is_custom is True
     assert preset.prompt == "Translate to English"
-    assert preset.is_batch is False
-
-
-def test_prompt_uses_default_filter_and_context(tmp_path, monkeypatch):
-    config_path = _write_valid_config(tmp_path)
-    captured: dict = {}
-
-    def fake_run(cfg, preset):
-        captured["preset"] = preset
-        return 0
-
-    monkeypatch.setattr("voicerecon.runner.run", fake_run)
-    rc = cli.main(["--prompt", "Do X", "--config", config_path])
-    assert rc == 0
-    preset = captured["preset"]
     assert preset.speaker_filter == "them"
     assert preset.context == "current"
 
 
-def test_prompt_rejects_empty_text(tmp_path, monkeypatch, capsys):
+def test_cli_prompt_whitespace_becomes_transcript_only(tmp_path, monkeypatch):
     config_path = _write_valid_config(tmp_path)
-    monkeypatch.setattr("voicerecon.runner.run", lambda cfg, preset: 0)
+    captured = _record_run(monkeypatch)
     rc = cli.main(["--prompt", "   ", "--config", config_path])
-    assert rc == 1
-    captured = capsys.readouterr()
-    assert "non-empty" in (captured.err + captured.out)
+    assert rc == 0
+    assert captured["preset"] is None
 
 
-def test_prompt_rejects_invalid_context(tmp_path, monkeypatch, capsys):
-    config_path = _write_valid_config(tmp_path)
-    monkeypatch.setattr("voicerecon.runner.run", lambda cfg, preset: 0)
-    rc = cli.main(["--prompt", "Do X", "--context", "nonsense", "--config", config_path])
-    assert rc == 1
-
-
-def test_prompt_requires_credentials(tmp_path, monkeypatch, capsys):
+def test_cli_prompt_requires_credentials(tmp_path, monkeypatch, capsys):
     config_path = _write_valid_config(tmp_path, with_credentials=False)
     monkeypatch.setattr("voicerecon.runner.run", lambda cfg, preset: 0)
     rc = cli.main(["--prompt", "Do X", "--config", config_path])
     assert rc == 1
-    err_and_out = capsys.readouterr()
-    assert "API key" in (err_and_out.err + err_and_out.out) or "credentials" in (err_and_out.err + err_and_out.out).lower()
+    captured = capsys.readouterr()
+    assert "AI mode needs" in (captured.err + captured.out)
+
+
+def test_no_flag_and_empty_cfg_prompt_is_transcript_only(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path, prompt="")
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    assert captured["preset"] is None
+
+
+def test_no_flag_uses_cfg_prompt_preset_name(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path, prompt="meeting_summary")
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    assert captured["preset"].name == "meeting_summary"
+
+
+def test_no_flag_uses_cfg_prompt_custom_text(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path, prompt="Summarise the last 30 seconds.")
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    preset = captured["preset"]
+    assert preset.is_custom is True
+    assert preset.prompt == "Summarise the last 30 seconds."
+
+
+def test_cli_prompt_overrides_cfg_prompt(tmp_path, monkeypatch):
+    config_path = _write_valid_config(tmp_path, prompt="meeting_summary")
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--prompt", "interview_candidate", "--config", config_path])
+    assert rc == 0
+    assert captured["preset"].name == "interview_candidate"
+
+
+def test_cfg_prompt_trigger_overrides_built_in(tmp_path, monkeypatch):
+    """cfg["prompt_trigger"] flips a built-in preset's trigger at runtime."""
+    config_path = _write_valid_config(
+        tmp_path, prompt="meeting_summary", prompt_trigger="per_segment"
+    )
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    assert captured["preset"].name == "meeting_summary"
+    assert captured["preset"].trigger == "per_segment"
+
+
+def test_cfg_prompt_trigger_applies_to_custom(tmp_path, monkeypatch):
+    config_path = _write_valid_config(
+        tmp_path, prompt="Recap the meeting.", prompt_trigger="on_shutdown"
+    )
+    captured = _record_run(monkeypatch)
+    rc = cli.main(["--config", config_path])
+    assert rc == 0
+    preset = captured["preset"]
+    assert preset.is_custom is True
+    assert preset.trigger == "on_shutdown"
+    assert preset.speaker_filter == "both"
+
+
+def test_cfg_prompt_requires_credentials(tmp_path, monkeypatch, capsys):
+    config_path = _write_valid_config(
+        tmp_path, with_credentials=False, prompt="meeting_summary"
+    )
+    monkeypatch.setattr("voicerecon.runner.run", lambda cfg, preset: 0)
+    rc = cli.main(["--config", config_path])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "AI mode needs" in (captured.err + captured.out)

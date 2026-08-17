@@ -43,6 +43,17 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
+    # soundcard prints one of these on every buffer glitch on Windows loopback;
+    # they interleave with transcript / AI output and are almost always harmless
+    # (the VAD absorbs the missed samples). Filter by warning class — a
+    # message-based filter did not stick on Python 3.14.
+    import warnings
+    try:
+        import soundcard
+        warnings.simplefilter("ignore", soundcard.SoundcardRuntimeWarning)
+    except (ImportError, AttributeError):
+        warnings.filterwarnings("ignore", message="data discontinuity in recording")
+
     hint = platform_check.loopback_hint()
     if hint:
         ui.warn(hint)
@@ -84,10 +95,8 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
-        if preset.is_custom:
-            ui.info(f"Mode: --prompt — {preset.description}")
-        else:
-            ui.info(f"Mode: --listen {preset.name} — {preset.description}")
+        label = "custom prompt" if preset.is_custom else preset.name
+        ui.info(f"Mode: {label} — {preset.description}")
         if preset.is_batch:
             ui.info(f"  speaker filter: {preset.speaker_filter}   trigger: on shutdown (Ctrl+C)")
         else:
@@ -154,14 +163,10 @@ def _process_segment(
     payload = context.render(payload_segments)
 
     ui.rule(f"AI [{preset.name}]")
-    reply = ai.ask_streaming(
-        cfg,
-        preset.prompt,
-        payload,
-        lambda chunk: print(chunk, end="", flush=True),
-    )
+    printer = ui.SentenceStreamPrinter()
+    reply = ai.ask_streaming(cfg, preset.prompt, payload, printer.push)
     if reply.ok:
-        print(flush=True)
+        printer.flush()
         ai_text = reply.text
     else:
         ai_text = f"(AI failed) {reply.text}"

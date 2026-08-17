@@ -12,13 +12,13 @@ PROG = "voicerecon"
 
 EPILOG = """\
 examples:
-  voicerecon                       transcript-only listening (no AI)
-  voicerecon --listen interview_candidate
-                                   listen + interview-answer helper (per-segment)
-  voicerecon --listen meeting_summary
-                                   listen + summarize the whole session at Ctrl+C
+  voicerecon                       use cfg['prompt'] (transcript-only when empty)
+  voicerecon --prompt meeting_summary
+                                   run the meeting_summary built-in preset once
   voicerecon --prompt "translate every segment into English"
-                                   custom per-segment prompt (streaming only)
+                                   run once with a custom prompt (defaults to
+                                   filter=them, context=current, streaming)
+  voicerecon --prompt              mini-wizard to change cfg['prompt'] only
   voicerecon --configure           first-time interactive setup
   voicerecon --show                print the current config (credentials masked)
   voicerecon --show-devices        list detected audio input / loopback devices
@@ -38,33 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
     parser.add_argument(
-        "--listen",
-        metavar="PRESET",
-        help="enable AI-per-segment mode with the named preset (see --presets)",
-    )
-    parser.add_argument(
         "--prompt",
-        metavar="TEXT",
-        help=(
-            "enable AI-per-segment mode with a custom prompt "
-            "(streaming only; for a session summary use --listen meeting_summary)"
-        ),
-    )
-    parser.add_argument(
-        "--from",
-        dest="speaker_filter",
-        choices=presets.SPEAKER_FILTERS,
+        metavar="VALUE",
+        nargs="?",
         default=None,
-        help="override the speaker filter for --prompt (default: them)",
-    )
-    parser.add_argument(
-        "--context",
-        dest="context_spec",
-        metavar="SPEC",
-        default=None,
+        const=True,
         help=(
-            "override the context spec for --prompt: 'current' or "
-            "'window:<seconds>' (default: current)"
+            "with VALUE: run with that prompt for one session (overrides "
+            "cfg['prompt']); VALUE that matches a built-in preset name is used "
+            "as that preset, any other text is used as a custom streaming "
+            "prompt. Without VALUE: run a mini-wizard to change cfg['prompt'] "
+            "and exit"
         ),
     )
     parser.add_argument(
@@ -112,6 +96,8 @@ def _print_show(cfg: dict) -> None:
     ui.info(f"  Whisper model:         {cfg['whisper_model_size']}")
     ui.info(f"  Input device:          {cfg.get('input_device') or '(default)'}")
     ui.info(f"  Loopback device:       {cfg.get('loopback_device') or '(default)'}")
+    ui.info(f"  Default prompt:        {cfg.get('prompt') or '(none — transcript only)'}")
+    ui.info(f"  Prompt trigger:        {cfg.get('prompt_trigger') or '(preset default / per_segment for custom)'}")
     ui.info(f"  AI model:              {cfg['model']}")
     ui.info(f"  Anthropic key:         {ui.mask(str(cfg['anthropic_api_key']))}")
     ui.info(f"  Telegram bot:          {ui.mask(str(cfg['telegram_bot_token']))}")
@@ -168,14 +154,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"--{exclusive[0].replace('_', '-')} and --{exclusive[1].replace('_', '-')} "
             "cannot be combined; run one at a time"
         )
-    if exclusive and (args.listen or args.prompt):
+    if exclusive and args.prompt is not None:
         parser.error(
-            f"--{exclusive[0].replace('_', '-')} cannot be combined with --listen or --prompt"
+            f"--{exclusive[0].replace('_', '-')} cannot be combined with --prompt"
         )
-    if args.listen and args.prompt:
-        parser.error("--listen and --prompt cannot be combined; pick one")
-    if (args.speaker_filter is not None or args.context_spec is not None) and not args.prompt:
-        parser.error("--from and --context require --prompt")
 
     if args.presets:
         _print_presets()
@@ -188,6 +170,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.configure:
             return config.run_wizard(args.config_path)
+
+        if args.prompt is True:
+            return config.run_set_prompt(args.config_path)
 
         if args.show:
             path = config.config_path(args.config_path)
@@ -204,24 +189,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         cfg = config.load(args.config_path)
 
-        preset: presets.Preset | None = None
-        if args.listen:
-            try:
-                preset = presets.get(args.listen)
-            except KeyError as exc:
-                ui.error(str(exc))
-                return 1
-            config.require_credentials_for_ai(cfg)
-        elif args.prompt:
-            try:
-                preset = presets.make_custom(
-                    args.prompt,
-                    speaker_filter=args.speaker_filter or "them",
-                    context_spec=args.context_spec or "current",
-                )
-            except ValueError as exc:
-                ui.error(str(exc))
-                return 1
+        # --prompt overrides cfg["prompt"]. Bare --prompt (setter mode) was
+        # handled above before we even loaded the runtime config.
+        raw_value = args.prompt if isinstance(args.prompt, str) else str(cfg.get("prompt") or "")
+        trigger_override = str(cfg.get("prompt_trigger") or "")
+        try:
+            preset: presets.Preset | None = presets.resolve(
+                raw_value, trigger_override=trigger_override
+            )
+        except ValueError as exc:
+            ui.error(str(exc))
+            return 1
+        if preset is not None:
             config.require_credentials_for_ai(cfg)
 
         from . import runner

@@ -76,27 +76,9 @@ def test_built_in_presets_are_not_custom():
         assert presets.get(name).is_custom is False
 
 
-def test_make_custom_accepts_overrides():
-    p = presets.make_custom(
-        "Summarise the last minute", speaker_filter="both", context_spec="window:60"
-    )
-    assert p.speaker_filter == "both"
-    assert p.context == "window:60"
-
-
 def test_make_custom_rejects_empty_prompt():
     with pytest.raises(ValueError):
         presets.make_custom("   ")
-
-
-def test_make_custom_rejects_bad_speaker_filter():
-    with pytest.raises(ValueError):
-        presets.make_custom("do X", speaker_filter="everyone")
-
-
-def test_make_custom_rejects_bad_context_spec():
-    with pytest.raises(ValueError):
-        presets.make_custom("do X", context_spec="nonsense")
 
 
 def test_make_custom_description_truncates_long_prompt():
@@ -104,3 +86,41 @@ def test_make_custom_description_truncates_long_prompt():
     p = presets.make_custom(long_prompt)
     assert len(p.description) <= 60
     assert p.description.endswith("...")
+
+
+def test_resolve_empty_returns_none():
+    assert presets.resolve("") is None
+    assert presets.resolve("   ") is None
+
+
+def test_resolve_preset_name_returns_built_in():
+    p = presets.resolve("meeting_summary")
+    assert p is presets.BUILT_IN["meeting_summary"]
+
+
+def test_resolve_free_text_returns_custom():
+    p = presets.resolve("Translate to English.")
+    assert p is not None
+    assert p.is_custom is True
+    assert p.prompt == "Translate to English."
+
+
+def test_resolve_trigger_override_on_preset():
+    p = presets.resolve("meeting_summary", trigger_override="per_segment")
+    assert p is not None
+    assert p.name == "meeting_summary"
+    assert p.trigger == "per_segment"
+
+
+def test_resolve_trigger_override_on_custom():
+    p = presets.resolve("Summarise the meeting.", trigger_override="on_shutdown")
+    assert p is not None
+    assert p.is_custom is True
+    assert p.trigger == "on_shutdown"
+    assert p.speaker_filter == "both"  # batch custom defaults to both
+
+
+def test_resolve_empty_trigger_override_keeps_preset_default():
+    p = presets.resolve("meeting_summary", trigger_override="")
+    assert p is presets.BUILT_IN["meeting_summary"]
+    assert p.trigger == "on_shutdown"

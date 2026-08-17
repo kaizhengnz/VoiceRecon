@@ -1,6 +1,6 @@
 # VoiceRecon
 
-Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally hand the transcript to an AI — either through a built-in scenario preset (interview help, meeting summary) or with your own prompt on the command line.
+Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally hand the transcript to an AI — either through a built-in scenario preset (interview help, meeting summary) or with your own prompt. The chosen prompt lives in one field (`cfg["prompt"]`) that can hold either a built-in preset name or free-form text; `--prompt VALUE` on the CLI overrides it for one session.
 
 Sibling of [ScreenRecon](https://github.com/kaizhengnz/ScreenRecon) — same design philosophy (long-running desktop tool, local-first, Telegram delivery), applied to speech instead of screen regions.
 
@@ -8,15 +8,14 @@ Status: **alpha**. MVP is Windows-first; macOS works if you install BlackHole; L
 
 ## What it does
 
-Three modes, picked at launch:
+Two modes, chosen by whatever `cfg["prompt"]` (or `--prompt VALUE`) resolves to:
 
-1. **Transcript-only** (default — no flag). Writes a plain-text transcript file under your save directory. Nothing goes to the cloud. Useful for recording meetings you want to search later.
-2. **AI-assisted with a built-in preset** (`--listen <preset>`). Same transcript, plus the AI is called with a preset-specific system prompt. Presets fall into two families:
-   - **Live** (`interview_candidate`, `interview_recruiter`) — the AI runs after each completed utterance and pushes its reply to Telegram in real time.
-   - **On shutdown** (`meeting_summary`) — the AI runs once when you press Ctrl+C, over the entire session's transcript. The reply is saved to a file in `save_dir` and also pushed to Telegram. If nothing was recorded, the call is skipped.
-3. **AI-assisted with a custom prompt** (`--prompt "..."`). Same transcript, but you supply the system prompt inline. Streaming only (per-segment); for a session summary use `--listen meeting_summary`.
+1. **Transcript-only** — `cfg["prompt"]` is empty and no `--prompt` is given. Writes a plain-text transcript file under `save_dir`. Nothing goes to the cloud.
+2. **AI-assisted** — `cfg["prompt"]` (or `--prompt VALUE`) is non-empty. The value is interpreted as:
+   - **Built-in preset name** (`interview_candidate`, `interview_recruiter`, `meeting_summary`) — the preset owns its speaker filter, context window, and trigger; e.g. `meeting_summary` fires once at Ctrl+C over the full session, saves the reply to `save_dir`, and pushes it to Telegram; the interview presets fire after each completed utterance and push to Telegram in real time.
+   - **Any other text** — treated as a custom streaming prompt. Defaults to `filter=them` (only the other party's speech reaches the AI) and `context=current` (just the segment that fired the trigger). No CLI override for these defaults — use a built-in preset if you need different behaviour.
 
-Both modes segment audio when either:
+Utterances end when either:
 - silence exceeds the configured threshold (`speech_silence_seconds`, default 1.5 s), or
 - the other speaker starts talking (immediate cut).
 
@@ -48,13 +47,13 @@ voicerecon --configure
 # Transcript-only listening
 voicerecon
 
-# Live help while being interviewed — AI reacts to each question the interviewer asks
-voicerecon --listen interview_candidate
+# Run once with a built-in preset (name overrides cfg['prompt'])
+voicerecon --prompt interview_candidate
 
 # One summary of the whole session, delivered when you hit Ctrl+C
-voicerecon --listen meeting_summary
+voicerecon --prompt meeting_summary
 
-# Custom per-segment prompt — no preset needed
+# Free-form text is treated as a custom streaming prompt
 voicerecon --prompt "Translate the speaker's words into English"
 
 # See what presets exist
@@ -79,20 +78,7 @@ voicerecon --show
 - **Trigger** — `per segment` fires after each matching utterance and pushes the reply to Telegram immediately. `on shutdown` fires once at Ctrl+C over the whole session, saves the reply to a file in `save_dir` as `<preset>-YYYYMMDD-HHMMSS.txt`, and also pushes it to Telegram. When nothing was recorded, the `on shutdown` call is skipped.
 - **Context** — applies only to per-segment presets. `current` sends only the segment that just finished. `window:<seconds>` sends every segment within that many seconds behind it.
 
-## Custom prompt
-
-If none of the built-in presets fit, hand the AI your own prompt on the command line:
-
-```bash
-voicerecon --prompt "Translate the speaker's words into English"
-```
-
-By default the prompt sees only the current segment from the other party (equivalent to `--from them --context current`). Both knobs are overridable:
-
-- `--from them|me|both` — which speaker's segments the AI sees
-- `--context current|window:<seconds>` — send just the latest segment, or every segment ending in the last N seconds
-
-Custom prompts are streaming (per-segment) only — for an end-of-session summary use `--listen meeting_summary`. Same credential requirement as `--listen`: Anthropic API key + Telegram bot must be configured.
+The filter / context / trigger of a built-in preset are baked in and cannot be overridden per-invocation — for behaviours the built-ins don't cover, either write a custom prompt (defaults to filter=them + context=current + per-segment streaming) or add a new preset in `src/voicerecon/presets.py`.
 
 ## Config file
 
@@ -105,6 +91,8 @@ Custom prompts are streaming (per-segment) only — for an end-of-session summar
   "whisper_model_size": "small",
   "input_device": "",
   "loopback_device": "",
+  "prompt": "",
+  "prompt_trigger": "",
   "model": "claude-haiku-4-5",
   "anthropic_api_key": "",
   "telegram_bot_token": "",
@@ -114,7 +102,11 @@ Custom prompts are streaming (per-segment) only — for an end-of-session summar
 
 `input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by index, marks the one an empty field resolves to, and accepts an index or a device name — partial names match; `0` clears a pinned device back to the system default.
 
-The three credential fields are only required when using `--listen <preset>` or `--prompt "..."`. Transcript-only mode works with them all empty.
+`prompt` is the single field that decides AI mode when you run `voicerecon` with no `--prompt`. Empty = transcript-only; a value that matches a built-in preset name (`interview_candidate`, `interview_recruiter`, `meeting_summary`) uses that preset with its baked filter/context/trigger; any other text is treated as a custom prompt. `--configure` sets it via a numbered menu that also offers "type your own prompt" for the free-text case. `--prompt VALUE` on the CLI overrides `cfg["prompt"]` for a single session and follows the same disambiguation rule.
+
+`prompt_trigger` picks when the AI is called: `per_segment` fires after every completed utterance, `on_shutdown` fires once at Ctrl+C over the full session. Empty means "use the built-in preset's baked default, or `per_segment` for a custom prompt". `--configure` (and bare `voicerecon --prompt`) asks this after the prompt itself; a non-empty value in the config **overrides** the preset's baked trigger — e.g. setting `"prompt": "meeting_summary", "prompt_trigger": "per_segment"` runs the meeting-summary prompt after every utterance instead of at Ctrl+C. `filter` on custom prompts follows the chosen trigger (`per_segment` → `them`, `on_shutdown` → `both`).
+
+The three credential fields are only required when `cfg["prompt"]` (or `--prompt VALUE`) resolves to a preset. Transcript-only mode works with them all empty.
 
 ## Transcript file format
 
