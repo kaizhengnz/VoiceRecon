@@ -1,4 +1,5 @@
-"""Segmentation logic: turn per-stream audio + VAD events into cut segments.
+"""Segmentation logic: turn per-stream VAD events into cut boundaries and
+route the accepted audio to a streaming transcription sink.
 
 Loopback owns the timeline. Rules:
 
@@ -20,109 +21,120 @@ setup where the mic inevitably picks up the leaked speaker audio; a
 symmetric cross-cut chopped both sides into millisecond fragments and
 lost almost everything.
 
-Buffered audio between the ``start`` and the cut is collected in a list
-of numpy blocks; the caller (runner) reassembles it into one array and
-sends it to STT.
+Audio that survives the loopback-priority filter is forwarded to the
+optional ``on_stream_audio`` callback (typically the runner's
+per-speaker :class:`voicerecon.streaming.StreamingTranscriber`) as it
+arrives; the segmenter itself no longer buffers audio blocks. Segment
+boundaries still land on the ready queue as lightweight
+:class:`ReadySegment` records — the runner uses each one to know when
+to ``finalize`` the matching streamer and hand the accumulated text to
+the transcript writer and AI.
 
 The segmenter is thread-safe: two audio threads call
-:meth:`process_events` concurrently, and the main thread consumes
-:attr:`ready_segments`. Access is serialized by an internal lock.
+:meth:`on_audio` / :meth:`on_events` concurrently, and the main thread
+consumes the ready queue. Access is serialized by an internal lock;
+the ``on_stream_audio`` callback runs *outside* the lock so a slow
+sink cannot stall the capture threads.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 import numpy as np
 
 from . import vad
 
+StreamAudioSink = Callable[[str, np.ndarray], None]
+
 
 @dataclass
 class PendingSegment:
-    """State per stream for the currently-being-collected segment."""
+    """Boundary state per stream; ``had_audio`` gates empty-utterance drop."""
 
     speaker: str
     started_at: float | None = None
-    blocks: list[np.ndarray] = field(default_factory=list)
+    had_audio: bool = False
 
     @property
     def active(self) -> bool:
         return self.started_at is not None
 
-    def append_audio(self, samples: np.ndarray) -> None:
-        if self.active and samples.size:
-            self.blocks.append(samples)
+    def note_audio(self) -> None:
+        if self.active:
+            self.had_audio = True
 
     def start(self, timestamp: float) -> None:
         self.started_at = timestamp
-        self.blocks = []
+        self.had_audio = False
 
-    def cut(self, ended_at: float) -> ReadySegment | None:
+    def cut(self, ended_at: float) -> "ReadySegment | None":
         if not self.active:
             return None
-        audio = _concat_blocks(self.blocks)
         started = self.started_at or ended_at
+        had_audio = self.had_audio
         self.started_at = None
-        self.blocks = []
-        if audio.size == 0:
+        self.had_audio = False
+        if not had_audio:
             return None
         return ReadySegment(
-            speaker=self.speaker,
-            audio=audio,
-            started_at=started,
-            ended_at=ended_at,
+            speaker=self.speaker, started_at=started, ended_at=ended_at
         )
 
 
 @dataclass
 class ReadySegment:
-    """One utterance ready for STT. Audio is float32 mono at 16 kHz."""
+    """One utterance boundary. Text lives in the runner's streaming buffer."""
 
     speaker: str
-    audio: np.ndarray
     started_at: float
     ended_at: float
 
 
-def _concat_blocks(blocks: Iterable[np.ndarray]) -> np.ndarray:
-    if not blocks:
-        return np.empty(0, dtype=np.float32)
-    return np.concatenate(list(blocks)).astype(np.float32, copy=False)
-
-
 class Segmenter:
-    """Owns the per-stream state and the ready-segment queue."""
+    """Owns the per-stream state and the ready-boundary queue."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, on_stream_audio: StreamAudioSink | None = None) -> None:
         self._pending: dict[str, PendingSegment] = {
             "me": PendingSegment("me"),
             "them": PendingSegment("them"),
         }
         self._ready: deque[ReadySegment] = deque()
         self._lock = threading.Lock()
+        self._on_stream_audio = on_stream_audio
 
     @property
     def _loopback_active(self) -> bool:
         return self._pending["them"].active
 
-    def _emit(self, cut: ReadySegment | None) -> None:
+    def _emit(self, cut: "ReadySegment | None") -> None:
         if cut is not None:
             self._ready.append(cut)
 
     def on_audio(self, speaker: str, samples: np.ndarray) -> None:
-        """Push audio for the currently-active segment on ``speaker``.
+        """Route audio for the currently-active segment on ``speaker``.
 
         Silent audio (before a ``start`` event on this stream) is dropped,
         and mic audio is dropped entirely while loopback is active.
+        Accepted audio is forwarded to the streaming sink (if configured)
+        after the segmenter's own lock is released.
         """
+        if samples.size == 0:
+            return
+        forward = False
         with self._lock:
             if speaker == "me" and self._loopback_active:
                 return
-            self._pending[speaker].append_audio(samples)
+            pending = self._pending[speaker]
+            if not pending.active:
+                return
+            pending.note_audio()
+            forward = self._on_stream_audio is not None
+        if forward:
+            self._on_stream_audio(speaker, samples)  # type: ignore[misc]
 
     def on_events(self, speaker: str, events: Iterable[vad.SpeechEvent]) -> None:
         """Feed VAD events for ``speaker``.
@@ -155,7 +167,7 @@ class Segmenter:
         self._emit(self._pending[speaker].cut(timestamp))
 
     def drain(self) -> list[ReadySegment]:
-        """Pop every segment that is ready right now."""
+        """Pop every boundary that is ready right now."""
         with self._lock:
             items = list(self._ready)
             self._ready.clear()

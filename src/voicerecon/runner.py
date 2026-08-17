@@ -1,21 +1,27 @@
 """Main event loop.
 
-Wires audio capture, VAD, segmentation, STT, transcript writing and
-(optionally) AI-per-segment delivery together. Runs until the user hits
-Ctrl+C or an unrecoverable error occurs.
+Wires audio capture, VAD, segmentation, streaming STT, transcript
+writing and (optionally) AI-per-segment delivery together. Runs until
+the user hits Ctrl+C or an unrecoverable error occurs.
 
 Threading:
 
 - Two :class:`voicerecon.audio.AudioSource` capture threads (mic +
-  loopback) each push blocks into their own callback, which runs VAD and
-  updates the shared :class:`voicerecon.segmenter.Segmenter`.
-- The main thread pumps a work loop: drain ready segments, run STT
-  synchronously, write to the transcript, and (when a preset is selected)
-  fire the AI call + Telegram delivery.
+  loopback) push blocks into their own callback, which runs VAD and
+  updates the shared :class:`voicerecon.segmenter.Segmenter`. Audio
+  that survives the segmenter's loopback-priority filter is routed
+  into the matching :class:`voicerecon.streaming.StreamingTranscriber`
+  in the same thread (StreamingTranscriber's own lock guards the
+  buffer).
+- The main thread pumps a work loop: drain segment boundaries (each
+  triggers ``finalize`` on the matching streamer plus writer + AI
+  delivery), then call ``commit_step`` on each streamer to flush any
+  locally-agreed prefix to the terminal.
 
-STT on the main thread is intentional — running one segment at a time
-keeps memory bounded and avoids interleaved AI calls stomping each other's
-prompts.
+Whisper runs on the main thread on purpose — the streamer holds its
+lock only around buffer mutations, so a 200 ms Whisper call does not
+block the audio capture threads. Serial transcription also keeps AI
+calls from interleaving.
 """
 
 from __future__ import annotations
@@ -24,7 +30,23 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from . import ai, audio, config, context, notify, presets, segmenter, stt, summary, transcript, ui, vad
+import numpy as np
+
+from . import (
+    ai,
+    audio,
+    config,
+    context,
+    notify,
+    presets,
+    segmenter,
+    streaming,
+    stt,
+    summary,
+    transcript,
+    ui,
+    vad,
+)
 
 MAX_HISTORY = 200
 """Cap on retained ready segments used to build ``window:N`` context. At the
@@ -32,7 +54,10 @@ longest configured window (5 min ≈ 60 short utterances) 200 is comfortable.
 Suspended when the active preset is batch — the shutdown path needs the
 full session or a long meeting gets truncated."""
 
-DRAIN_INTERVAL_SECONDS = 0.1
+COMMIT_INTERVAL_SECONDS = 0.5
+"""Cadence at which the main loop asks each streamer to commit any locally-
+agreed prefix. Each pump can trigger a full Whisper pass; ~500 ms keeps the
+streaming feel while leaving CPU headroom for a synchronous AI call."""
 
 
 def _secrets(cfg: Mapping[str, Any]) -> list[str]:
@@ -59,7 +84,29 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         ui.warn(hint)
 
     writer = transcript.TranscriptWriter(str(cfg["save_dir"]))
-    seg = segmenter.Segmenter()
+
+    # Both streamers share one WhisperModel — sharing is safe because
+    # commit_step / finalize only run on the main thread, so the model
+    # never sees concurrent transcribe() calls.
+    model_size = str(cfg["whisper_model_size"])
+    shared_model: Any | None = None
+
+    def _model_factory() -> Any:
+        nonlocal shared_model
+        if shared_model is None:
+            shared_model = stt.build_model(model_size)
+        return shared_model
+
+    streamers: dict[str, streaming.StreamingTranscriber] = {
+        speaker: streaming.StreamingTranscriber(_model_factory)
+        for speaker in ("me", "them")
+    }
+    accumulated: dict[str, list[str]] = {"me": [], "them": []}
+
+    def _stream_router(speaker: str, samples: np.ndarray) -> None:
+        streamers[speaker].feed(samples)
+
+    seg = segmenter.Segmenter(on_stream_audio=_stream_router)
 
     silence_ms = int(float(cfg["speech_silence_seconds"]) * 1000)
     mic_vad = vad.StreamVAD(min_silence_ms=silence_ms)
@@ -86,12 +133,10 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         callback=_loop_callback,
     )
 
-    transcriber = stt.Transcriber(model_size=str(cfg["whisper_model_size"]))
-
     ui.rule("VoiceRecon listening")
     ui.info(f"Save directory: {cfg['save_dir']}")
     ui.info(f"Silence threshold: {cfg['speech_silence_seconds']}s")
-    ui.info(f"Whisper model: {cfg['whisper_model_size']} (loads on first speech)")
+    ui.info(f"Whisper model: {model_size} (loads on first speech)")
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
@@ -107,21 +152,40 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
 
     history: list[context.Segment] = []
 
+    def _emit_chunk(speaker: str, chunk: str) -> None:
+        if not chunk:
+            return
+        if not accumulated[speaker]:
+            print(f"[{speaker}]", end="", flush=True)
+        print(chunk, end="", flush=True)
+        accumulated[speaker].append(chunk)
+
+    def _close_line(speaker: str) -> str:
+        text = "".join(accumulated[speaker]).strip()
+        if accumulated[speaker]:
+            print(flush=True)
+        accumulated[speaker] = []
+        return text
+
+    def _flush_boundary(item: segmenter.ReadySegment) -> None:
+        _emit_chunk(item.speaker, streamers[item.speaker].finalize())
+        text = _close_line(item.speaker)
+        if text:
+            _dispatch_utterance(cfg, item, text, preset, writer, history)
+
     try:
         with mic, loopback:
             while True:
-                ready = seg.drain()
-                for item in ready:
-                    _process_segment(
-                        cfg, item, preset, writer, transcriber, history
-                    )
-                time.sleep(DRAIN_INTERVAL_SECONDS)
+                for item in seg.drain():
+                    _flush_boundary(item)
+                for speaker, streamer in streamers.items():
+                    _emit_chunk(speaker, streamer.commit_step())
+                time.sleep(COMMIT_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         ui.info("\nStopping…")
     finally:
-        remaining = seg.flush(time.monotonic())
-        for item in remaining:
-            _process_segment(cfg, item, preset, writer, transcriber, history)
+        for item in seg.flush(time.monotonic()):
+            _flush_boundary(item)
         if preset is not None and preset.is_batch:
             summary.render_and_deliver(cfg, preset, history)
         if writer.path is not None:
@@ -130,20 +194,15 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     return 0
 
 
-def _process_segment(
+def _dispatch_utterance(
     cfg: Mapping[str, Any],
     item: segmenter.ReadySegment,
+    text: str,
     preset: presets.Preset | None,
     writer: transcript.TranscriptWriter,
-    transcriber: stt.Transcriber,
     history: list[context.Segment],
 ) -> None:
-    text = transcriber.transcribe(item.audio)
-    if not text:
-        return
-
     writer.append(item.speaker, text)
-    ui.info(f"[{item.speaker}] {text}")
 
     ctx_segment = context.Segment(
         speaker=item.speaker, text=text, end=item.ended_at
@@ -181,5 +240,3 @@ def _process_segment(
             ui.error(
                 ui.scrub(f"Telegram delivery raised: {type(exc).__name__}: {exc}", _secrets(cfg))
             )
-
-

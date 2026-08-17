@@ -15,9 +15,9 @@ Two modes, chosen by whatever `cfg["prompt"]` (or `--prompt VALUE`) resolves to:
    - **Built-in preset name** (`interview_candidate`, `interview_recruiter`, `meeting_summary`) — the preset owns its speaker filter, context window, and trigger; e.g. `meeting_summary` fires once at Ctrl+C over the full session, saves the reply to `save_dir`, and pushes it to Telegram; the interview presets fire after each completed utterance and push to Telegram in real time.
    - **Any other text** — treated as a custom streaming prompt. Defaults to `filter=them` (only the other party's speech reaches the AI) and `context=current` (just the segment that fired the trigger). No CLI override for these defaults — use a built-in preset if you need different behaviour.
 
-Utterances end when either:
-- silence exceeds the configured threshold (`speech_silence_seconds`, default 1.5 s), or
-- the other speaker starts talking (immediate cut).
+Transcript text appears incrementally as each speaker talks — VoiceRecon runs Whisper on a rolling buffer and commits the prefix that two consecutive passes agree on (LocalAgreement-2). The line for one utterance closes when either:
+- silence on the active stream exceeds `speech_silence_seconds` (default 1.5 s), or
+- system audio starts talking mid-mic (immediate cut of the mic segment). Mic starting mid-system-audio does *not* cut the system audio — see §4 of `docs/VoiceRecon_Design.md` for why the cross-cut is asymmetric.
 
 ## Install
 
