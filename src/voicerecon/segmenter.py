@@ -1,13 +1,24 @@
 """Segmentation logic: turn per-stream audio + VAD events into cut segments.
 
-Two conditions cut a segment (whichever hits first):
+Loopback owns the timeline. Rules:
 
 1. **Silence threshold** on the currently active stream — surfaces as an
    ``end`` event from that stream's :class:`voicerecon.vad.StreamVAD`
    (which has ``min_silence_duration_ms`` set to the configured value).
-2. **Speaker change** — the *other* stream emits a ``start`` event while
-   this stream still has an open segment. That other stream's speech
-   preempts the current speaker; the current segment is cut immediately.
+2. **Loopback preempts mic** — when the loopback (``them``) VAD emits
+   ``start`` while the mic (``me``) has an open segment, that mic
+   segment is cut immediately and the loopback segment begins.
+3. **Mic is suppressed while loopback is active** — mic audio frames
+   and mic VAD events (``start`` / ``end``) are dropped for the whole
+   duration between a loopback ``start`` and its matching ``end``. The
+   reverse preemption does *not* exist: mic starting has no effect on
+   an active loopback segment.
+
+The trade-off is that user speech which lands on top of loopback speech
+is not captured, which is the right call for the standard speaker + mic
+setup where the mic inevitably picks up the leaked speaker audio; a
+symmetric cross-cut chopped both sides into millisecond fragments and
+lost almost everything.
 
 Buffered audio between the ``start`` and the cut is collected in a list
 of numpy blocks; the caller (runner) reassembles it into one array and
@@ -86,8 +97,6 @@ def _concat_blocks(blocks: Iterable[np.ndarray]) -> np.ndarray:
 class Segmenter:
     """Owns the per-stream state and the ready-segment queue."""
 
-    OTHER = {"me": "them", "them": "me"}
-
     def __init__(self) -> None:
         self._pending: dict[str, PendingSegment] = {
             "me": PendingSegment("me"),
@@ -96,21 +105,32 @@ class Segmenter:
         self._ready: deque[ReadySegment] = deque()
         self._lock = threading.Lock()
 
+    @property
+    def _loopback_active(self) -> bool:
+        return self._pending["them"].active
+
+    def _emit(self, cut: ReadySegment | None) -> None:
+        if cut is not None:
+            self._ready.append(cut)
+
     def on_audio(self, speaker: str, samples: np.ndarray) -> None:
         """Push audio for the currently-active segment on ``speaker``.
 
-        Silent audio (before a ``start`` event on this stream) is dropped.
+        Silent audio (before a ``start`` event on this stream) is dropped,
+        and mic audio is dropped entirely while loopback is active.
         """
         with self._lock:
+            if speaker == "me" and self._loopback_active:
+                return
             self._pending[speaker].append_audio(samples)
 
     def on_events(self, speaker: str, events: Iterable[vad.SpeechEvent]) -> None:
         """Feed VAD events for ``speaker``.
 
-        A ``start`` from the other stream preempts the current speaker (the
-        preempted segment is emitted immediately). An ``end`` cuts the
-        current speaker's segment. Multiple events in one call are handled
-        in order.
+        Loopback (``them``) events always run; mic (``me``) events are
+        dropped for the duration of an active loopback segment. A
+        loopback ``start`` also cuts any pending mic segment. See the
+        module docstring for the full state machine.
         """
         with self._lock:
             for event in events:
@@ -120,18 +140,19 @@ class Segmenter:
                     self._handle_end(speaker, event.timestamp)
 
     def _handle_start(self, speaker: str, timestamp: float) -> None:
-        other = self.OTHER[speaker]
-        other_pending = self._pending[other]
-        if other_pending.active:
-            cut = other_pending.cut(timestamp)
-            if cut is not None:
-                self._ready.append(cut)
-        self._pending[speaker].start(timestamp)
+        if speaker == "me":
+            if self._loopback_active:
+                return
+            self._pending["me"].start(timestamp)
+            return
+        # speaker == "them": loopback preempts any pending mic segment.
+        self._emit(self._pending["me"].cut(timestamp))
+        self._pending["them"].start(timestamp)
 
     def _handle_end(self, speaker: str, timestamp: float) -> None:
-        cut = self._pending[speaker].cut(timestamp)
-        if cut is not None:
-            self._ready.append(cut)
+        if speaker == "me" and self._loopback_active:
+            return
+        self._emit(self._pending[speaker].cut(timestamp))
 
     def drain(self) -> list[ReadySegment]:
         """Pop every segment that is ready right now."""
@@ -144,9 +165,7 @@ class Segmenter:
         """Cut whatever is still open (used on graceful shutdown)."""
         with self._lock:
             for pending in self._pending.values():
-                cut = pending.cut(timestamp)
-                if cut is not None:
-                    self._ready.append(cut)
+                self._emit(pending.cut(timestamp))
             items = list(self._ready)
             self._ready.clear()
         return items
