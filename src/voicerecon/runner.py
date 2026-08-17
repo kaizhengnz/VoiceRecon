@@ -56,9 +56,8 @@ full session or a long meeting gets truncated."""
 
 COMMIT_INTERVAL_SECONDS = 0.5
 """Cadence at which the main loop asks each streamer to commit any locally-
-agreed prefix. Slower than the old drain interval because each pump can
-trigger a full Whisper pass; ~500 ms keeps the streaming feel while leaving
-CPU headroom for a synchronous AI call."""
+agreed prefix. Each pump can trigger a full Whisper pass; ~500 ms keeps the
+streaming feel while leaving CPU headroom for a synchronous AI call."""
 
 
 def _secrets(cfg: Mapping[str, Any]) -> list[str]:
@@ -86,9 +85,9 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
 
     writer = transcript.TranscriptWriter(str(cfg["save_dir"]))
 
-    # One WhisperModel shared by both streamers — the model is stateless
-    # across ``transcribe`` calls and both streamers only run on the main
-    # thread, so sharing halves memory without introducing a race.
+    # Both streamers share one WhisperModel — sharing is safe because
+    # commit_step / finalize only run on the main thread, so the model
+    # never sees concurrent transcribe() calls.
     model_size = str(cfg["whisper_model_size"])
     shared_model: Any | None = None
 
@@ -164,7 +163,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     def _close_line(speaker: str) -> str:
         text = "".join(accumulated[speaker]).strip()
         if accumulated[speaker]:
-            print(flush=True)  # terminate the streaming line
+            print(flush=True)
         accumulated[speaker] = []
         return text
 

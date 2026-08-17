@@ -85,9 +85,12 @@ class StreamingTranscriber:
             if self._buffer.size < self._min_chunk_samples:
                 return ""
             snapshot = self._buffer
-        # Transcribe outside the lock — audio thread may extend the buffer
-        # meanwhile. Trim below still operates on self._buffer (possibly
-        # grown by then) starting from the front, which is what we want.
+        # Transcribe outside the lock. Trim below operates on self._buffer
+        # (possibly extended by feed() in the meantime) from the front —
+        # correct because feed() only appends, so the origin stays aligned
+        # to the snapshot. If feed()'s emergency trim fires while we run,
+        # it clears self._prev_words, which forces the lcp check below to
+        # reprime instead of trim (see the `if not lcp` branch).
         words = self._transcribe_words(snapshot)
         if not words:
             with self._lock:
