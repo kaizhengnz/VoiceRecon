@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+SPEAKER_FILTERS: tuple[str, ...] = ("both", "them", "me")
 SpeakerFilter = Literal["both", "them", "me"]
 Trigger = Literal["per_segment", "on_shutdown"]
 
@@ -44,6 +45,11 @@ class Preset:
     def is_batch(self) -> bool:
         """True when the AI fires once at Ctrl+C rather than per segment."""
         return self.trigger == "on_shutdown"
+
+    @property
+    def is_custom(self) -> bool:
+        """True when this preset was synthesized from ``--prompt`` on the CLI."""
+        return self.name == _CUSTOM_NAME
 
 
 BUILT_IN: dict[str, Preset] = {
@@ -98,3 +104,46 @@ def get(name: str) -> Preset:
 
 def names() -> list[str]:
     return sorted(BUILT_IN)
+
+
+_CUSTOM_NAME = "custom"
+_DESCRIPTION_MAX_LEN = 60
+
+
+def make_custom(
+    prompt: str, *, speaker_filter: SpeakerFilter = "them", context_spec: str = "current"
+) -> Preset:
+    """Build an ad-hoc streaming preset from user-supplied CLI values.
+
+    Raises ``ValueError`` when the prompt is empty, the speaker filter is
+    outside ``them/me/both``, or the context spec cannot be parsed. Batch
+    (``on_shutdown``) is not offered via this path — the built-in
+    ``meeting_summary`` preset is the sole way to get end-of-session
+    summarization.
+    """
+    from . import context  # local import avoids a cycle at module load
+
+    cleaned = (prompt or "").strip()
+    if not cleaned:
+        raise ValueError("--prompt requires non-empty text")
+    if speaker_filter not in SPEAKER_FILTERS:
+        raise ValueError(
+            f"speaker filter must be one of {'/'.join(SPEAKER_FILTERS)}; "
+            f"got {speaker_filter!r}"
+        )
+    context.parse(context_spec)
+
+    return Preset(
+        name=_CUSTOM_NAME,
+        speaker_filter=speaker_filter,
+        context=context_spec,
+        prompt=cleaned,
+        description=_summarize_prompt(cleaned),
+    )
+
+
+def _summarize_prompt(prompt: str) -> str:
+    single_line = " ".join(prompt.split())
+    if len(single_line) <= _DESCRIPTION_MAX_LEN:
+        return single_line
+    return single_line[: _DESCRIPTION_MAX_LEN - 3] + "..."

@@ -1,6 +1,6 @@
 # VoiceRecon
 
-Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally hand the transcript to an AI with a scenario preset — either segment by segment (interview help) or once at the end of the session (meeting summary).
+Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally hand the transcript to an AI — either through a built-in scenario preset (interview help, meeting summary) or with your own prompt on the command line.
 
 Sibling of [ScreenRecon](https://github.com/kaizhengnz/ScreenRecon) — same design philosophy (long-running desktop tool, local-first, Telegram delivery), applied to speech instead of screen regions.
 
@@ -8,12 +8,13 @@ Status: **alpha**. MVP is Windows-first; macOS works if you install BlackHole; L
 
 ## What it does
 
-Two modes, picked at launch:
+Three modes, picked at launch:
 
 1. **Transcript-only** (default — no flag). Writes a plain-text transcript file under your save directory. Nothing goes to the cloud. Useful for recording meetings you want to search later.
-2. **AI-assisted** (`--listen <preset>`). Same transcript, plus the AI is called with a preset-specific system prompt. Presets fall into two families:
+2. **AI-assisted with a built-in preset** (`--listen <preset>`). Same transcript, plus the AI is called with a preset-specific system prompt. Presets fall into two families:
    - **Live** (`interview_candidate`, `interview_recruiter`) — the AI runs after each completed utterance and pushes its reply to Telegram in real time.
    - **On shutdown** (`meeting_summary`) — the AI runs once when you press Ctrl+C, over the entire session's transcript. The reply is saved to a file in `save_dir` and also pushed to Telegram. If nothing was recorded, the call is skipped.
+3. **AI-assisted with a custom prompt** (`--prompt "..."`). Same transcript, but you supply the system prompt inline. Streaming only (per-segment); for a session summary use `--listen meeting_summary`.
 
 Both modes segment audio when either:
 - silence exceeds the configured threshold (`speech_silence_seconds`, default 1.5 s), or
@@ -53,6 +54,9 @@ voicerecon --listen interview_candidate
 # One summary of the whole session, delivered when you hit Ctrl+C
 voicerecon --listen meeting_summary
 
+# Custom per-segment prompt — no preset needed
+voicerecon --prompt "Translate the speaker's words into English"
+
 # See what presets exist
 voicerecon --presets
 
@@ -75,6 +79,21 @@ voicerecon --show
 - **Trigger** — `per segment` fires after each matching utterance and pushes the reply to Telegram immediately. `on shutdown` fires once at Ctrl+C over the whole session, saves the reply to a file in `save_dir` as `<preset>-YYYYMMDD-HHMMSS.txt`, and also pushes it to Telegram. When nothing was recorded, the `on shutdown` call is skipped.
 - **Context** — applies only to per-segment presets. `current` sends only the segment that just finished. `window:<seconds>` sends every segment within that many seconds behind it.
 
+## Custom prompt
+
+If none of the built-in presets fit, hand the AI your own prompt on the command line:
+
+```bash
+voicerecon --prompt "Translate the speaker's words into English"
+```
+
+By default the prompt sees only the current segment from the other party (equivalent to `--from them --context current`). Both knobs are overridable:
+
+- `--from them|me|both` — which speaker's segments the AI sees
+- `--context current|window:<seconds>` — send just the latest segment, or every segment ending in the last N seconds
+
+Custom prompts are streaming (per-segment) only — for an end-of-session summary use `--listen meeting_summary`. Same credential requirement as `--listen`: Anthropic API key + Telegram bot must be configured.
+
 ## Config file
 
 `~/.config/voicerecon/config.json` on Linux/macOS, `%APPDATA%\voicerecon\config.json` on Windows (technically `$XDG_CONFIG_HOME/voicerecon/` if set).
@@ -95,7 +114,7 @@ voicerecon --show
 
 `input_device` and `loopback_device` stay empty to follow whatever the system defaults are at capture time. `--configure` lists the detected devices by index, marks the one an empty field resolves to, and accepts an index or a device name — partial names match; `0` clears a pinned device back to the system default.
 
-The three credential fields are only required when using `--listen <preset>`. Transcript-only mode works with them all empty.
+The three credential fields are only required when using `--listen <preset>` or `--prompt "..."`. Transcript-only mode works with them all empty.
 
 ## Transcript file format
 

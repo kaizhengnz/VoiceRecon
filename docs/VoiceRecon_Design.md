@@ -100,6 +100,8 @@ Every preset declares:
 
 `session` context (unbounded history for `per_segment`) is intentionally not offered. A user who really wants "everything so far" can set `window:999999`; capping it out of the type system avoids the silent-cost-blowup class of bug. `on_shutdown` naturally sees the full session because it only fires once; the `MAX_HISTORY` cap that bounds per-segment context memory is suspended while an `on_shutdown` preset is active so a long meeting is not truncated.
 
+Custom prompts entered on the command line via `--prompt "..."` are turned into an ad-hoc `Preset` by `presets.make_custom`, which validates the context spec and speaker filter before the pipeline starts. Ad-hoc presets always use `trigger="per_segment"`; batch behaviour is only available through the built-in `meeting_summary`, so the framing prompt ("summarize the following…") stays consistent between what users see in the code and what they invoke.
+
 ## 6. Config
 
 Fields (`~/.config/voicerecon/config.json` or `%APPDATA%\voicerecon\config.json`):
@@ -134,3 +136,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | 2026-08-16 | Transcription runs on a CUDA GPU when one is visible, with float16 on GPU and int8 on CPU |
 | 2026-08-16 | Device listings are numbered and mark the default, and the setup wizard accepts a number as well as a name |
 | 2026-08-17 | Reduce built-in presets to the interview pair and add meeting_summary — a new on_shutdown trigger that runs once at Ctrl+C and saves its reply to a file alongside pushing it to Telegram |
+| 2026-08-17 | Add a --prompt flag for ad-hoc streaming prompts, with --from and --context overrides; runner now takes a Preset instead of a preset name |
