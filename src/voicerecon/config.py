@@ -259,7 +259,6 @@ def _ask_choice(
 ) -> str:
     current_index = len(presets) + 1
     labels = [preset_label for preset_label, _, _ in presets]
-    width = max(len(preset_label) for preset_label in labels) if labels else 0
     current_preview = current if len(current) <= 60 else current[:57] + "..."
 
     default_index = current_index
@@ -269,12 +268,44 @@ def _ask_choice(
                 default_index = index
                 break
 
+    current_matching_index = None
+    for index, (_, preset_value, _) in enumerate(presets, start=1):
+        if preset_value == current:
+            current_matching_index = index
+            break
+    current_label = (
+        f"Current {label} = {current_matching_index}"
+        if current_matching_index is not None
+        else f"Current {label}"
+    )
+
+    # Trailing parens: prefer the matching preset's note (aligns with the note
+    # column above); fall back to its label to preserve display-name casing and
+    # any parenthesised annotation baked into the label; otherwise show a
+    # preview of the raw value.
+    if current_matching_index is not None:
+        matching_label, _, matching_note = presets[current_matching_index - 1]
+        current_display = matching_note or matching_label
+    else:
+        current_display = current_preview
+
+    # Pad the label column only when at least one preset has a note to align
+    # to; note-less lists would otherwise get a huge blank gap before the
+    # trailing parens.
+    have_any_note = any(note for _, _, note in presets)
+    width = (
+        max([len(preset_label) for preset_label in labels] + [len(current_label)])
+        if have_any_note
+        else 0
+    )
+
     for index, (preset_label, _, note) in enumerate(presets, start=1):
-        ui.info(f"    {index}) {preset_label:<{width}}  ({note})")
-    ui.info(f"    {current_index}) (keep current — {current_preview})")
+        suffix = f"  ({note})" if note else ""
+        ui.info(f"    {index}) {preset_label:<{width}}{suffix}".rstrip())
+    ui.info(f"    {current_index}) {current_label:<{width}}  ({current_display})")
 
     for _ in range(MAX_PROMPT_RETRIES):
-        prompt_label = f"    Enter 1-{current_index} or type any {label}"
+        prompt_label = f"Enter 1-{current_index} or type any {label}"
         answer = _ask(prompt_label, str(default_index)).strip()
         if answer.isdigit():
             number = int(answer)
@@ -282,7 +313,7 @@ def _ask_choice(
                 return presets[number - 1][1]
             if number == current_index:
                 return current
-            ui.warn(f"    Choice must be 1-{current_index}, please try again.")
+            ui.warn(f"Choice must be 1-{current_index}, please try again.")
             continue
         return answer
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
@@ -291,7 +322,7 @@ def _ask_choice(
 def _ask_whisper_size(current: str) -> str:
     ui.info("   Whisper model size (bigger = more accurate, more RAM, slower):")
     presets = [(size, size, note) for size, note in WHISPER_SIZES]
-    return _ask_choice("model size", presets, current, default=DEFAULT_WHISPER_SIZE)
+    return _ask_choice("Model size", presets, current, default=DEFAULT_WHISPER_SIZE)
 
 
 def _ask_device(
@@ -312,7 +343,7 @@ def _ask_device(
             ui.info(f"     {line}")
 
     note = "pattern match supported, 0 = system default" if current else "pattern match supported"
-    prompt = f"  {label} ({note})"
+    prompt = f"{label} ({note})"
     for _ in range(MAX_PROMPT_RETRIES):
         answer = _ask(prompt, current, empty_hint="system default").strip()
         if answer == current:
@@ -362,11 +393,11 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
         ui.info(f"note: {platform_check.MACOS_LOOPBACK_HINT}\n")
 
     ui.info("1) Save directory (transcript files land here)")
-    cfg["save_dir"] = _ask("  save directory", cfg["save_dir"])
+    cfg["save_dir"] = _ask("Save directory", cfg["save_dir"])
 
     ui.info("\n2) Silence threshold (seconds of quiet before an utterance is cut)")
     cfg["speech_silence_seconds"] = _ask_float(
-        "  silence seconds", cfg["speech_silence_seconds"], minimum=0
+        "Silence seconds", cfg["speech_silence_seconds"], minimum=0
     )
 
     ui.info("\n3) Whisper model size")
@@ -401,9 +432,9 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     env_key = os.environ.get(ENV_API_KEY, "").strip()
     if env_key:
         ui.info(f"  {ENV_API_KEY} is set ({ui.mask(env_key)}); it wins over this file at runtime.")
-    cfg["anthropic_api_key"] = _ask("  Anthropic API key", cfg["anthropic_api_key"], secret=True)
-    cfg["telegram_bot_token"] = _ask("  Telegram bot token", cfg["telegram_bot_token"], secret=True)
-    cfg["telegram_chat_id"] = _ask("  Telegram chat ID", cfg["telegram_chat_id"], secret=True)
+    cfg["anthropic_api_key"] = _ask("Anthropic API key", cfg["anthropic_api_key"], secret=True)
+    cfg["telegram_bot_token"] = _ask("Telegram bot token", cfg["telegram_bot_token"], secret=True)
+    cfg["telegram_chat_id"] = _ask("Telegram chat ID", cfg["telegram_chat_id"], secret=True)
 
     has_ai = bool(str(cfg["anthropic_api_key"]).strip())
     has_tg = bool(str(cfg["telegram_bot_token"]).strip() and str(cfg["telegram_chat_id"]).strip())
