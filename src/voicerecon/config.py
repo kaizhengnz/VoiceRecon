@@ -322,7 +322,7 @@ def _ask_choice(
 def _ask_whisper_size(current: str) -> str:
     ui.info("   Whisper model size (bigger = more accurate, more RAM, slower):")
     presets = [(size, size, note) for size, note in WHISPER_SIZES]
-    return _ask_choice("model size", presets, current, default=DEFAULT_WHISPER_SIZE)
+    return _ask_choice("Model size", presets, current, default=DEFAULT_WHISPER_SIZE)
 
 
 def _ask_device(
@@ -393,11 +393,11 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
         ui.info(f"note: {platform_check.MACOS_LOOPBACK_HINT}\n")
 
     ui.info("1) Save directory (transcript files land here)")
-    cfg["save_dir"] = _ask("save directory", cfg["save_dir"])
+    cfg["save_dir"] = _ask("Save directory", cfg["save_dir"])
 
     ui.info("\n2) Silence threshold (seconds of quiet before an utterance is cut)")
     cfg["speech_silence_seconds"] = _ask_float(
-        "silence seconds", cfg["speech_silence_seconds"], minimum=0
+        "Silence seconds", cfg["speech_silence_seconds"], minimum=0
     )
 
     ui.info("\n3) Whisper model size")
