@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--from",
         dest="speaker_filter",
-        choices=("them", "me", "both"),
+        choices=presets.SPEAKER_FILTERS,
         default=None,
         help="override the speaker filter for --prompt (default: them)",
     )

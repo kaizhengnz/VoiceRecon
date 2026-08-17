@@ -84,7 +84,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
-        if preset.name == presets.CUSTOM_NAME:
+        if preset.is_custom:
             ui.info(f"Mode: --prompt — {preset.description}")
         else:
             ui.info(f"Mode: --listen {preset.name} — {preset.description}")

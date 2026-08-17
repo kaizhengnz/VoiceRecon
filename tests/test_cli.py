@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from voicerecon import cli
+from voicerecon import cli, config
 
 
 def test_help_exits_cleanly(capsys):
@@ -78,19 +80,13 @@ def test_from_with_invalid_speaker_rejects(capsys):
 
 
 def _write_valid_config(tmp_path, *, with_credentials: bool = True) -> str:
-    import json
-
-    payload = {
-        "save_dir": str(tmp_path / "voicerecon"),
-        "speech_silence_seconds": 1.5,
-        "whisper_model_size": "small",
-        "input_device": "",
-        "loopback_device": "",
-        "model": "claude-haiku-4-5",
-        "anthropic_api_key": "key" if with_credentials else "",
-        "telegram_bot_token": "token" if with_credentials else "",
-        "telegram_chat_id": "chat" if with_credentials else "",
-    }
+    payload = dict(config.DEFAULTS, save_dir=str(tmp_path / "voicerecon"))
+    if with_credentials:
+        payload.update(
+            anthropic_api_key="key",
+            telegram_bot_token="token",
+            telegram_chat_id="chat",
+        )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)

@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+SPEAKER_FILTERS: tuple[str, ...] = ("both", "them", "me")
 SpeakerFilter = Literal["both", "them", "me"]
 Trigger = Literal["per_segment", "on_shutdown"]
 
@@ -44,6 +45,11 @@ class Preset:
     def is_batch(self) -> bool:
         """True when the AI fires once at Ctrl+C rather than per segment."""
         return self.trigger == "on_shutdown"
+
+    @property
+    def is_custom(self) -> bool:
+        """True when this preset was synthesized from ``--prompt`` on the CLI."""
+        return self.name == _CUSTOM_NAME
 
 
 BUILT_IN: dict[str, Preset] = {
@@ -100,12 +106,12 @@ def names() -> list[str]:
     return sorted(BUILT_IN)
 
 
-CUSTOM_NAME = "custom"
+_CUSTOM_NAME = "custom"
 _DESCRIPTION_MAX_LEN = 60
 
 
 def make_custom(
-    prompt: str, *, speaker_filter: str = "them", context_spec: str = "current"
+    prompt: str, *, speaker_filter: SpeakerFilter = "them", context_spec: str = "current"
 ) -> Preset:
     """Build an ad-hoc streaming preset from user-supplied CLI values.
 
@@ -120,14 +126,15 @@ def make_custom(
     cleaned = (prompt or "").strip()
     if not cleaned:
         raise ValueError("--prompt requires non-empty text")
-    if speaker_filter not in ("them", "me", "both"):
+    if speaker_filter not in SPEAKER_FILTERS:
         raise ValueError(
-            f"speaker filter must be one of them/me/both; got {speaker_filter!r}"
+            f"speaker filter must be one of {'/'.join(SPEAKER_FILTERS)}; "
+            f"got {speaker_filter!r}"
         )
-    context.parse(context_spec)  # raises ValueError on bad specs
+    context.parse(context_spec)
 
     return Preset(
-        name=CUSTOM_NAME,
+        name=_CUSTOM_NAME,
         speaker_filter=speaker_filter,
         context=context_spec,
         prompt=cleaned,

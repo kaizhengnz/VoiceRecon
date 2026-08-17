@@ -62,13 +62,18 @@ def test_meeting_summary_is_on_shutdown_with_both_speakers():
 
 def test_make_custom_uses_defaults_and_streams():
     p = presets.make_custom("Translate to English")
-    assert p.name == presets.CUSTOM_NAME
+    assert p.is_custom is True
     assert p.speaker_filter == "them"
     assert p.context == "current"
     assert p.trigger == "per_segment"
     assert p.is_batch is False
     assert p.prompt == "Translate to English"
     assert p.description
+
+
+def test_built_in_presets_are_not_custom():
+    for name in presets.names():
+        assert presets.get(name).is_custom is False
 
 
 def test_make_custom_accepts_overrides():
