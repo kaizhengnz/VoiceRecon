@@ -83,12 +83,14 @@ STT is synchronous on the main thread on purpose. Running Whisper concurrently o
 
 ## 4. Segmentation rules
 
-An utterance ends when *either* of:
+Loopback owns the timeline. An utterance ends when *either* of:
 
 1. **Silence threshold** on the currently active stream — the corresponding stream's VAD emits `end` after `speech_silence_seconds` of quiet.
-2. **Speaker change** — the other stream's VAD emits `start` while this stream is still mid-utterance. The current utterance is cut *at the moment of the other speaker's start*, and the new speaker's utterance begins immediately.
+2. **Loopback preempts mic** — the loopback (`them`) VAD emits `start` while the mic (`me`) has an open segment; the mic segment is cut immediately and the loopback segment begins. The reverse preemption does not exist: mic starting has no effect on an active loopback segment.
 
-Rule 2 is why Segmenter needs cross-stream visibility (a per-stream VAD alone cannot know the other stream started).
+Rule 2 is asymmetric on purpose. The standard capture setup is a laptop speaker + built-in mic; the mic inevitably picks up the leaked speaker audio, so any symmetric cross-cut would chop both streams into millisecond fragments as they interrupt each other and almost nothing would survive. The mic stream is therefore suppressed for the whole duration between a loopback `start` and its matching `end` — mic audio frames and mic VAD events are dropped during that window. Mic capture resumes on the first mic `start` event after loopback goes silent. The trade-off is that user speech overlapping with loopback speech is not captured; in a speaker + mic setup that speech is unusable anyway, so this is the right default.
+
+Rule 2 is also why Segmenter needs cross-stream visibility (a per-stream VAD alone cannot know the other stream started).
 
 ## 5. Speaker filter, context, and trigger
 
@@ -139,3 +141,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | 2026-08-17 | Add a --prompt flag for ad-hoc streaming prompts, with --from and --context overrides; runner now takes a Preset instead of a preset name |
 | 2026-08-17 | Port the SR-38 picker UX polish: `_ask_choice`'s current-line becomes `N) Current <label> = K (matching preset's note or label)` so options that resolve to the same result are visibly linked, padding kicks in only when at least one preset has a note, and the `Enter 1-N or type any X` prompt and `Choice must be 1-N` warning drop to column 0 so they read as input/feedback rather than more option rows |
 | 2026-08-17 | Unify AI-mode selection under one field / one flag (was in-flight as issue #21 "add listen field"; design iteration during review collapsed it into this shape). `cfg["listen"]` renamed to `cfg["prompt"]` — a single string that means transcript-only when empty, resolves to a built-in preset when it matches a `presets.BUILT_IN` name, and is used as a custom prompt otherwise. New sibling field `cfg["prompt_trigger"]` (empty / `per_segment` / `on_shutdown`) chooses when the AI is called — for a built-in preset a non-empty value overrides the baked trigger; for a custom prompt it picks the trigger (and the speaker filter follows: `per_segment` → `them`, `on_shutdown` → `both`). Remove `--listen`, `--from`, `--context` — CLI shrinks to just `--prompt VALUE`, which overrides `cfg["prompt"]` for one session and follows the same disambiguation rule. New helper `presets.resolve(value, trigger_override=...)` centralises both the disambiguation and the trigger override, returning a `dataclasses.replace`d preset when overriding a built-in. Wizard step 6 reorders to put `meeting_summary` first, adds a "type your own prompt" entry, and always asks the trigger after the prompt (defaulting to the built-in's baked value or the previously stored `cfg["prompt_trigger"]`). `--prompt` becomes `nargs="?"`: bare `voicerecon --prompt` runs a mini-wizard (`config.run_set_prompt`) that reuses the same prompt+trigger flow to change only those two fields. |
+| 2026-08-17 | Segmenter goes asymmetric (VR-23): loopback (`them`) owns the timeline, and mic (`me`) frames + VAD events are dropped while loopback is active. A loopback `start` still cuts a pending mic segment, but mic starting no longer cuts loopback. Fixes the standard speaker + built-in mic case where the symmetric cross-cut used to chop both streams into millisecond fragments because the mic picks up the leaked speaker audio. §4 rule 2 rewritten. |

@@ -46,29 +46,67 @@ def test_audio_before_start_is_dropped():
     assert segments[0].audio.size == 200
 
 
-def test_speaker_change_preempts_current_segment():
+def test_loopback_start_cuts_pending_mic_segment():
     seg = segmenter.Segmenter()
-    seg.on_events("them", [_event("start", 1.0)])
-    seg.on_audio("them", _samples(300))
-    # 'me' starts talking mid-utterance — should cut them's segment now
-    seg.on_events("me", [_event("start", 2.0)])
+    seg.on_events("me", [_event("start", 1.0)])
     seg.on_audio("me", _samples(150))
-    seg.on_events("me", [_event("end", 4.0)])
+    # Loopback (them) starts mid-mic — should cut mic and start loopback.
+    seg.on_events("them", [_event("start", 2.0)])
+    seg.on_audio("them", _samples(300))
+    seg.on_events("them", [_event("end", 4.0)])
 
     segments = seg.drain()
-    assert [s.speaker for s in segments] == ["them", "me"]
-    assert segments[0].audio.size == 300
-    assert segments[0].ended_at == 2.0  # cut at the speaker-change moment
-    assert segments[1].audio.size == 150
+    assert [s.speaker for s in segments] == ["me", "them"]
+    assert segments[0].audio.size == 150
+    assert segments[0].ended_at == 2.0
+    assert segments[1].audio.size == 300
     assert segments[1].ended_at == 4.0
 
 
-def test_speaker_start_with_no_prior_active_does_not_emit():
+def test_mic_start_does_not_cut_loopback():
+    """The reverse of the loopback→mic preemption: mic starting during a
+    loopback segment must not disturb loopback."""
     seg = segmenter.Segmenter()
     seg.on_events("them", [_event("start", 1.0)])
-    # No audio yet; me's start preempts an empty buffer, should not emit
-    seg.on_events("me", [_event("start", 2.0)])
-    assert seg.drain() == []
+    seg.on_audio("them", _samples(300))
+    seg.on_events("me", [_event("start", 2.0)])  # dropped: loopback active
+    seg.on_audio("me", _samples(150))            # dropped: loopback active
+    seg.on_events("them", [_event("end", 4.0)])  # closes the loopback segment
+
+    segments = seg.drain()
+    assert [s.speaker for s in segments] == ["them"]
+    assert segments[0].audio.size == 300
+    assert segments[0].ended_at == 4.0
+
+
+def test_mic_events_dropped_while_loopback_active():
+    seg = segmenter.Segmenter()
+    seg.on_events("them", [_event("start", 1.0)])
+    seg.on_audio("them", _samples(100))
+    # A full start/end pair on mic during loopback is silently ignored.
+    seg.on_events("me", [_event("start", 1.5)])
+    seg.on_audio("me", _samples(50))
+    seg.on_events("me", [_event("end", 1.8)])
+    seg.on_events("them", [_event("end", 2.0)])
+
+    segments = seg.drain()
+    assert [s.speaker for s in segments] == ["them"]
+    assert segments[0].audio.size == 100
+
+
+def test_mic_captured_after_loopback_ends():
+    seg = segmenter.Segmenter()
+    seg.on_events("them", [_event("start", 1.0), _event("end", 2.0)])
+    seg.on_audio("them", _samples(50))
+    seg.on_events("me", [_event("start", 3.0)])
+    seg.on_audio("me", _samples(200))
+    seg.on_events("me", [_event("end", 4.0)])
+
+    segments = seg.drain()
+    speakers = [s.speaker for s in segments]
+    assert "me" in speakers
+    me_seg = next(s for s in segments if s.speaker == "me")
+    assert me_seg.audio.size == 200
 
 
 def test_flush_cuts_open_segments():
