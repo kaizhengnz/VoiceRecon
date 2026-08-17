@@ -43,6 +43,13 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
+    # soundcard prints one of these on every buffer glitch on Windows loopback;
+    # they interleave with transcript / AI output and are almost always harmless
+    # (the VAD absorbs the missed samples). Match by message so we don't need
+    # to import from soundcard just to silence it.
+    import warnings
+    warnings.filterwarnings("ignore", message="data discontinuity in recording")
+
     hint = platform_check.loopback_hint()
     if hint:
         ui.warn(hint)
