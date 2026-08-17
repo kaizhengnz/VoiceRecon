@@ -1,9 +1,9 @@
 """Local transcript file writer.
 
-One file per session, named ``transcript-YYYYMMDD-HHMMSS.txt`` and living
-under the configured ``save_dir``. Segments are appended immediately after
-each completed utterance, so a crash mid-session still leaves a readable
-partial transcript.
+Writes ``transcript.txt`` inside the session directory the runner creates
+under the configured ``save_dir`` (see :mod:`voicerecon.runner`). Segments
+are appended immediately after each completed utterance, so a crash mid-
+session still leaves a readable partial transcript.
 
 Line format: ``[HH:MM:SS] [them|me]: <text>``.
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import storage, ui
 
-FILENAME_STEM_FORMAT = "transcript-%Y%m%d-%H%M%S"
+FILENAME_STEM = "transcript"
 LINE_TIMESTAMP_FORMAT = "%H:%M:%S"
 
 
@@ -31,11 +31,10 @@ class TranscriptWriter:
     session that ends without any speech leaves no empty file behind.
     """
 
-    def __init__(self, save_dir: str) -> None:
-        self._save_dir = save_dir
+    def __init__(self, session_dir: str) -> None:
+        self._session_dir = session_dir
         self._path: Path | None = None
         self._lock = threading.Lock()
-        self._started_at = datetime.now()
         self._warned_about_error = False
 
     @property
@@ -66,9 +65,8 @@ class TranscriptWriter:
     def _ensure_path(self) -> Path | None:
         if self._path is not None:
             return self._path
-        stem = self._started_at.strftime(FILENAME_STEM_FORMAT)
         try:
-            path = storage.new_private_file(self._save_dir, stem)
+            path = storage.new_private_file(self._session_dir, FILENAME_STEM)
         except (OSError, RuntimeError) as exc:
             if not self._warned_about_error:
                 ui.warn(f"Cannot create transcript file: {exc}")

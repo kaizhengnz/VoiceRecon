@@ -9,6 +9,9 @@ from pathlib import Path
 
 from voicerecon import transcript
 
+# Tests treat ``tmp_path`` as the per-session directory the runner would
+# have created, so the writer's file lands directly in it as ``transcript.txt``.
+
 
 def test_no_writes_no_file(tmp_path: Path):
     writer = transcript.TranscriptWriter(str(tmp_path))
@@ -45,7 +48,7 @@ def test_empty_text_is_skipped(tmp_path: Path):
 def test_filename_matches_expected_pattern(tmp_path: Path):
     writer = transcript.TranscriptWriter(str(tmp_path))
     writer.append("me", "x")
-    assert re.fullmatch(r"transcript-\d{8}-\d{6}\.txt", writer.path.name)
+    assert writer.path.name == "transcript.txt"
 
 
 def test_writes_are_thread_safe(tmp_path: Path):

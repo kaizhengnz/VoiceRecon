@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -83,7 +85,13 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     if hint:
         ui.warn(hint)
 
-    writer = transcript.TranscriptWriter(str(cfg["save_dir"]))
+    # One directory per session so transcript, summary, and any future
+    # per-session artifact land together with a shared timestamp instead
+    # of scattered by their own creation times.
+    session_dir = str(
+        Path(cfg["save_dir"]) / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
+    writer = transcript.TranscriptWriter(session_dir)
 
     # Both streamers share one WhisperModel — sharing is safe because
     # commit_step / finalize only run on the main thread, so the model
@@ -195,7 +203,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         for item in seg.flush(time.monotonic()):
             _flush_boundary(item)
         if preset is not None and preset.is_batch:
-            summary.render_and_deliver(cfg, preset, history)
+            summary.render_and_deliver(cfg, preset, history, session_dir)
         if writer.path is not None:
             ui.info(f"Transcript saved to {writer.path}")
         ui.info("VoiceRecon stopped.")

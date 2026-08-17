@@ -32,20 +32,10 @@ def test_write_creates_file(tmp_path):
     assert path is not None
     assert path.exists()
     assert path.read_text(encoding="utf-8") == "hello world"
-    assert path.name.startswith("meeting_summary-")
-    assert path.name.endswith(".txt")
+    assert path.name == "meeting_summary.txt"
 
 
-def test_write_handles_collision(tmp_path, monkeypatch):
-    from datetime import datetime as real_datetime
-
-    class FrozenDatetime(real_datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return real_datetime(2026, 8, 17, 12, 0, 0)
-
-    monkeypatch.setattr(summary, "datetime", FrozenDatetime)
-
+def test_write_handles_collision(tmp_path):
     first = summary.write(str(tmp_path), "meeting_summary", "one")
     second = summary.write(str(tmp_path), "meeting_summary", "two")
     assert first is not None and second is not None
@@ -70,7 +60,7 @@ def test_render_and_deliver_skips_empty_history(cfg, meeting_preset, monkeypatch
     monkeypatch.setattr(
         summary.notify, "send_text", lambda *a, **k: calls.append(a) or True
     )
-    summary.render_and_deliver(cfg, meeting_preset, [])
+    summary.render_and_deliver(cfg, meeting_preset, [], cfg["save_dir"])
     assert calls == []
 
 
@@ -93,7 +83,7 @@ def test_render_and_deliver_skips_when_filter_drops_all(
         summary.notify, "send_text", lambda *a, **k: calls.append(a) or True
     )
     history = [context.Segment(speaker="me", text="hi", end=1.0)]
-    summary.render_and_deliver(cfg, them_only, history)
+    summary.render_and_deliver(cfg, them_only, history, cfg["save_dir"])
     assert calls == []
 
 
@@ -118,7 +108,7 @@ def test_render_and_deliver_calls_ai_saves_file_and_pushes_telegram(
         context.Segment(speaker="them", text="hello", end=1.0),
         context.Segment(speaker="me", text="hi there", end=2.0),
     ]
-    summary.render_and_deliver(cfg, meeting_preset, history)
+    summary.render_and_deliver(cfg, meeting_preset, history, str(tmp_path))
 
     assert len(ai_calls) == 1
     assert ai_calls[0]["system"] == meeting_preset.prompt
@@ -128,7 +118,7 @@ def test_render_and_deliver_calls_ai_saves_file_and_pushes_telegram(
     assert len(tg_calls) == 1
     assert tg_calls[0] == ("test-token", "test-chat", "summary text")
 
-    summary_files = list(tmp_path.glob("meeting_summary-*.txt"))
+    summary_files = list(tmp_path.glob("meeting_summary*.txt"))
     assert len(summary_files) == 1
     assert summary_files[0].read_text(encoding="utf-8") == "summary text"
 
@@ -156,11 +146,11 @@ def test_render_and_deliver_skips_telegram_when_credentials_missing(
         "telegram_chat_id": "",
     }
     history = [context.Segment(speaker="them", text="hi", end=1.0)]
-    summary.render_and_deliver(cfg, meeting_preset, history)
+    summary.render_and_deliver(cfg, meeting_preset, history, str(tmp_path))
 
     assert ai_calls == ["called"]
     assert tg_calls == []
-    assert list(tmp_path.glob("meeting_summary-*.txt"))
+    assert list(tmp_path.glob("meeting_summary*.txt"))
 
 
 def test_render_and_deliver_swallows_telegram_errors(
@@ -177,9 +167,9 @@ def test_render_and_deliver_swallows_telegram_errors(
 
     history = [context.Segment(speaker="them", text="hi", end=1.0)]
     # Must not raise.
-    summary.render_and_deliver(cfg, meeting_preset, history)
+    summary.render_and_deliver(cfg, meeting_preset, history, str(tmp_path))
 
-    assert list(tmp_path.glob("meeting_summary-*.txt"))
+    assert list(tmp_path.glob("meeting_summary*.txt"))
 
 
 def test_render_and_deliver_reports_ai_failure_but_still_writes(
@@ -196,9 +186,9 @@ def test_render_and_deliver_reports_ai_failure_but_still_writes(
     )
 
     history = [context.Segment(speaker="them", text="hi", end=1.0)]
-    summary.render_and_deliver(cfg, meeting_preset, history)
+    summary.render_and_deliver(cfg, meeting_preset, history, str(tmp_path))
 
-    files = list(tmp_path.glob("meeting_summary-*.txt"))
+    files = list(tmp_path.glob("meeting_summary*.txt"))
     assert len(files) == 1
     assert "network died" in files[0].read_text(encoding="utf-8")
     assert tg_texts == [files[0].read_text(encoding="utf-8")]
