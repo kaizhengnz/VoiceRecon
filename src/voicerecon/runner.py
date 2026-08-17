@@ -45,10 +45,14 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
 
     # soundcard prints one of these on every buffer glitch on Windows loopback;
     # they interleave with transcript / AI output and are almost always harmless
-    # (the VAD absorbs the missed samples). Match by message so we don't need
-    # to import from soundcard just to silence it.
+    # (the VAD absorbs the missed samples). Filter by warning class — a
+    # message-based filter did not stick on Python 3.14.
     import warnings
-    warnings.filterwarnings("ignore", message="data discontinuity in recording")
+    try:
+        import soundcard
+        warnings.simplefilter("ignore", soundcard.SoundcardRuntimeWarning)
+    except (ImportError, AttributeError):
+        warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
     hint = platform_check.loopback_hint()
     if hint:
