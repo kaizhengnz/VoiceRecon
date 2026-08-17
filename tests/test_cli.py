@@ -103,12 +103,12 @@ def test_cli_prompt_with_free_text_becomes_custom(tmp_path, monkeypatch):
     assert preset.context == "current"
 
 
-def test_cli_prompt_rejects_empty(tmp_path, monkeypatch):
+def test_cli_prompt_whitespace_becomes_transcript_only(tmp_path, monkeypatch):
     config_path = _write_valid_config(tmp_path)
-    _record_run(monkeypatch)
+    captured = _record_run(monkeypatch)
     rc = cli.main(["--prompt", "   ", "--config", config_path])
     assert rc == 0
-    # An empty --prompt after stripping resolves to None (transcript-only).
+    assert captured["preset"] is None
 
 
 def test_cli_prompt_requires_credentials(tmp_path, monkeypatch, capsys):

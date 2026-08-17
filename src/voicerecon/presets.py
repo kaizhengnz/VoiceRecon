@@ -25,7 +25,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-SPEAKER_FILTERS: tuple[str, ...] = ("both", "them", "me")
 SpeakerFilter = Literal["both", "them", "me"]
 Trigger = Literal["per_segment", "on_shutdown"]
 
@@ -107,17 +106,10 @@ def names() -> list[str]:
 
 
 def resolve(value: str) -> Preset | None:
-    """Interpret a string as a preset selection.
+    """Turn one string into a Preset (built-in match), custom preset, or None.
 
-    - Empty / whitespace → ``None`` (transcript-only)
-    - Matches a :data:`BUILT_IN` name → that preset (with its baked
-      speaker_filter / context / trigger)
-    - Anything else → an ad-hoc :func:`make_custom` preset with default
-      filter=them / context=current / trigger=per_segment
-
-    A custom prompt that happens to equal a built-in name (unlikely in
-    practice) resolves as the built-in — this is the one ambiguity of
-    using a single string field for both selection modes.
+    Ambiguity: a custom prompt that happens to equal a built-in name
+    resolves as the built-in.
     """
     stripped = (value or "").strip()
     if not stripped:
@@ -131,33 +123,21 @@ _CUSTOM_NAME = "custom"
 _DESCRIPTION_MAX_LEN = 60
 
 
-def make_custom(
-    prompt: str, *, speaker_filter: SpeakerFilter = "them", context_spec: str = "current"
-) -> Preset:
-    """Build an ad-hoc streaming preset from user-supplied CLI values.
+def make_custom(prompt: str) -> Preset:
+    """Build an ad-hoc streaming preset from a free-form prompt string.
 
-    Raises ``ValueError`` when the prompt is empty, the speaker filter is
-    outside ``them/me/both``, or the context spec cannot be parsed. Batch
-    (``on_shutdown``) is not offered via this path — the built-in
-    ``meeting_summary`` preset is the sole way to get end-of-session
-    summarization.
+    Filter is fixed to ``them``, context to ``current``, trigger to
+    ``per_segment``. Batch (``on_shutdown``) is not available on this path;
+    the built-in ``meeting_summary`` preset is the sole way to get
+    end-of-session summarization.
     """
-    from . import context  # local import avoids a cycle at module load
-
     cleaned = (prompt or "").strip()
     if not cleaned:
-        raise ValueError("--prompt requires non-empty text")
-    if speaker_filter not in SPEAKER_FILTERS:
-        raise ValueError(
-            f"speaker filter must be one of {'/'.join(SPEAKER_FILTERS)}; "
-            f"got {speaker_filter!r}"
-        )
-    context.parse(context_spec)
-
+        raise ValueError("prompt requires non-empty text")
     return Preset(
         name=_CUSTOM_NAME,
-        speaker_filter=speaker_filter,
-        context=context_spec,
+        speaker_filter="them",
+        context="current",
         prompt=cleaned,
         description=_summarize_prompt(cleaned),
     )

@@ -180,9 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         cfg = config.load(args.config_path)
 
-        # --prompt overrides cfg["prompt"]; presets.resolve turns either
-        # value into a Preset (built-in when the string matches a preset
-        # name, custom text otherwise) or None (empty = transcript-only).
+        # --prompt overrides cfg["prompt"].
         raw_value = args.prompt if args.prompt is not None else str(cfg.get("prompt") or "")
         try:
             preset: presets.Preset | None = presets.resolve(raw_value)

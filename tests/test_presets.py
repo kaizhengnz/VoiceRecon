@@ -76,27 +76,9 @@ def test_built_in_presets_are_not_custom():
         assert presets.get(name).is_custom is False
 
 
-def test_make_custom_accepts_overrides():
-    p = presets.make_custom(
-        "Summarise the last minute", speaker_filter="both", context_spec="window:60"
-    )
-    assert p.speaker_filter == "both"
-    assert p.context == "window:60"
-
-
 def test_make_custom_rejects_empty_prompt():
     with pytest.raises(ValueError):
         presets.make_custom("   ")
-
-
-def test_make_custom_rejects_bad_speaker_filter():
-    with pytest.raises(ValueError):
-        presets.make_custom("do X", speaker_filter="everyone")
-
-
-def test_make_custom_rejects_bad_context_spec():
-    with pytest.raises(ValueError):
-        presets.make_custom("do X", context_spec="nonsense")
 
 
 def test_make_custom_description_truncates_long_prompt():

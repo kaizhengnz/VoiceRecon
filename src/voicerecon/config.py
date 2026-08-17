@@ -183,12 +183,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
 
 def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
-    """Refuse to start AI mode when any credential is empty.
-
-    Called whenever ``cfg["prompt"]`` (or the ``--prompt`` CLI override)
-    resolves to a preset. Pure transcript mode does not need any of these
-    fields.
-    """
+    """Refuse to start AI mode when any credential is empty."""
     missing = [
         _CREDENTIAL_LABELS[field]
         for field in CREDENTIAL_FIELDS
@@ -324,26 +319,18 @@ def _ask_choice(
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
 
 
-_CUSTOM_PROMPT_SENTINEL = "__type_your_own_prompt__"
-"""Menu-only marker for the 'type your own prompt' entry — its value is
-never stored in the config; a follow-up input collects the actual text."""
-
-_PRESET_ORDER = ("meeting_summary", "interview_candidate", "interview_recruiter")
-
-
 def _ask_default_prompt(current: str) -> str:
-    """Wizard step for ``cfg["prompt"]``.
-
-    Menu offers each built-in preset by name plus a 'type your own prompt'
-    entry that triggers a text follow-up. Enter with no current value = the
-    string returned is empty = transcript-only.
-    """
+    """Wizard step for ``cfg["prompt"]``."""
+    custom_sentinel = "__type_your_own_prompt__"
+    preset_order = ("meeting_summary", "interview_candidate", "interview_recruiter")
     options: list[tuple[str, str, str]] = [
-        (name, name, presets.BUILT_IN[name].description) for name in _PRESET_ORDER
+        (name, name, presets.BUILT_IN[name].description) for name in preset_order
     ]
-    options.append(("type your own prompt", _CUSTOM_PROMPT_SENTINEL, ""))
+    options.append(("type your own prompt", custom_sentinel, ""))
     chosen = _ask_choice("Prompt", options, current)
-    if chosen == _CUSTOM_PROMPT_SENTINEL:
+    if chosen == custom_sentinel:
+        # Do not prefill a built-in preset name as the free-text default —
+        # the user just chose to move away from it.
         default_text = "" if current in presets.BUILT_IN else current
         return _ask("Prompt text", default_text).strip()
     return chosen
@@ -453,7 +440,7 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     )
 
     ui.info(
-        "\n5) AI model + credentials (only needed if you plan to use --listen <preset>;"
+        "\n5) AI model + credentials (only needed if you plan to use any AI prompt;"
         " Enter to skip and stay in transcript-only mode)"
     )
     cfg["model"] = _ask_choice(
