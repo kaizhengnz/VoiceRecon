@@ -27,13 +27,9 @@ def test_presets_flag_lists_all_built_ins(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     for name in (
-        "translate",
         "interview_candidate",
         "interview_recruiter",
-        "lecture",
-        "speaking",
-        "debate",
-        "sales",
+        "meeting_summary",
     ):
         assert name in out
 
@@ -45,7 +41,7 @@ def test_configure_and_show_are_mutually_exclusive(capsys):
 
 def test_listen_with_show_rejects(capsys):
     with pytest.raises(SystemExit):
-        cli.main(["--listen", "translate", "--show"])
+        cli.main(["--listen", "interview_candidate", "--show"])
 
 
 def test_show_reports_missing_config(tmp_path, capsys):

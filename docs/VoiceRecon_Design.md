@@ -69,6 +69,8 @@ The design goals mirror ScreenRecon:
                   └──────────┘
 ```
 
+The diagram shows the per-segment path. Presets with `trigger="on_shutdown"` (e.g. `meeting_summary`) skip the per-segment branch entirely; the retained session is handed to the AI once at Ctrl+C, and the reply is written to a summary file under `save_dir` in addition to being pushed to Telegram. See §5.
+
 ## 3. Threading
 
 - Two capture threads (one per `AudioSource`), owned by `soundcard`'s recorder context manager.
@@ -88,14 +90,15 @@ An utterance ends when *either* of:
 
 Rule 2 is why Segmenter needs cross-stream visibility (a per-stream VAD alone cannot know the other stream started).
 
-## 5. Speaker filter and context
+## 5. Speaker filter, context, and trigger
 
 Every preset declares:
 
 - `speaker_filter`: `both`, `them` (system audio only), `me` (mic only). Segments not matching the filter are still transcribed and written to the local file, but not sent to the AI.
-- `context`: `current` sends only the segment that just fired; `window:<seconds>` sends every retained segment (subject to the same speaker filter) whose end timestamp is within N seconds behind the trigger.
+- `context`: `current` sends only the segment that just fired; `window:<seconds>` sends every retained segment (subject to the same speaker filter) whose end timestamp is within N seconds behind the trigger. Ignored when `trigger` is `on_shutdown`.
+- `trigger`: `per_segment` (default) fires the AI after each matching utterance. `on_shutdown` fires the AI once at Ctrl+C, sends the entire retained session (filtered by `speaker_filter`) as the payload, writes the reply to `<save_dir>/<preset>-YYYYMMDD-HHMMSS.txt`, and also pushes it to Telegram. When nothing was recorded the call is skipped so an empty session does not burn an API call or send a blank message.
 
-`session` (unbounded history) is intentionally not offered. A user who really wants "everything so far" can set `window:999999`; capping it out of the type system avoids the silent-cost-blowup class of bug.
+`session` context (unbounded history for `per_segment`) is intentionally not offered. A user who really wants "everything so far" can set `window:999999`; capping it out of the type system avoids the silent-cost-blowup class of bug. `on_shutdown` naturally sees the full session because it only fires once; the `MAX_HISTORY` cap that bounds per-segment context memory is suspended while an `on_shutdown` preset is active so a long meeting is not truncated.
 
 ## 6. Config
 
@@ -130,3 +133,4 @@ Cross-platform equivalence via ScreenCaptureKit / CoreAudio Tap is tracked as a 
 | 2026-08-15 | Initial design and MVP implementation |
 | 2026-08-16 | Transcription runs on a CUDA GPU when one is visible, with float16 on GPU and int8 on CPU |
 | 2026-08-16 | Device listings are numbered and mark the default, and the setup wizard accepts a number as well as a name |
+| 2026-08-17 | Reduce built-in presets to the interview pair and add meeting_summary — a new on_shutdown trigger that runs once at Ctrl+C and saves its reply to a file alongside pushing it to Telegram |
