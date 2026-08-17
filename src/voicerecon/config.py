@@ -343,7 +343,7 @@ def _ask_device(
             ui.info(f"     {line}")
 
     note = "pattern match supported, 0 = system default" if current else "pattern match supported"
-    prompt = f"  {label} ({note})"
+    prompt = f"{label} ({note})"
     for _ in range(MAX_PROMPT_RETRIES):
         answer = _ask(prompt, current, empty_hint="system default").strip()
         if answer == current:
@@ -393,11 +393,11 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
         ui.info(f"note: {platform_check.MACOS_LOOPBACK_HINT}\n")
 
     ui.info("1) Save directory (transcript files land here)")
-    cfg["save_dir"] = _ask("  save directory", cfg["save_dir"])
+    cfg["save_dir"] = _ask("save directory", cfg["save_dir"])
 
     ui.info("\n2) Silence threshold (seconds of quiet before an utterance is cut)")
     cfg["speech_silence_seconds"] = _ask_float(
-        "  silence seconds", cfg["speech_silence_seconds"], minimum=0
+        "silence seconds", cfg["speech_silence_seconds"], minimum=0
     )
 
     ui.info("\n3) Whisper model size")
@@ -432,9 +432,9 @@ def _run_wizard(path: str | os.PathLike[str] | None) -> int:
     env_key = os.environ.get(ENV_API_KEY, "").strip()
     if env_key:
         ui.info(f"  {ENV_API_KEY} is set ({ui.mask(env_key)}); it wins over this file at runtime.")
-    cfg["anthropic_api_key"] = _ask("  Anthropic API key", cfg["anthropic_api_key"], secret=True)
-    cfg["telegram_bot_token"] = _ask("  Telegram bot token", cfg["telegram_bot_token"], secret=True)
-    cfg["telegram_chat_id"] = _ask("  Telegram chat ID", cfg["telegram_chat_id"], secret=True)
+    cfg["anthropic_api_key"] = _ask("Anthropic API key", cfg["anthropic_api_key"], secret=True)
+    cfg["telegram_bot_token"] = _ask("Telegram bot token", cfg["telegram_bot_token"], secret=True)
+    cfg["telegram_chat_id"] = _ask("Telegram chat ID", cfg["telegram_chat_id"], secret=True)
 
     has_ai = bool(str(cfg["anthropic_api_key"]).strip())
     has_tg = bool(str(cfg["telegram_bot_token"]).strip() and str(cfg["telegram_chat_id"]).strip())
