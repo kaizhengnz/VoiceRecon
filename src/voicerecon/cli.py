@@ -13,9 +13,10 @@ PROG = "voicerecon"
 EPILOG = """\
 examples:
   voicerecon                       transcript-only listening (no AI)
-  voicerecon --listen translate    listen + translate the other party's speech
   voicerecon --listen interview_candidate
-                                   listen + interview-answer helper
+                                   listen + interview-answer helper (per-segment)
+  voicerecon --listen meeting_summary
+                                   listen + summarize the whole session at Ctrl+C
   voicerecon --configure           first-time interactive setup
   voicerecon --show                print the current config (credentials masked)
   voicerecon --show-devices        list detected audio input / loopback devices
@@ -118,8 +119,10 @@ def _print_presets() -> None:
     for name in presets.names():
         preset = presets.get(name)
         ui.info(f"  {name}")
+        ui.info(f"    trigger:        {preset.trigger}")
         ui.info(f"    speaker filter: {preset.speaker_filter}")
-        ui.info(f"    context:        {preset.context}")
+        if not preset.is_batch:
+            ui.info(f"    context:        {preset.context}")
         ui.info(f"    purpose:        {preset.description}")
 
 

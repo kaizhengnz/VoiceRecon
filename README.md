@@ -1,6 +1,6 @@
 # VoiceRecon
 
-Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally send each completed segment to an AI with a scenario preset (translate, interview help, lecture notes, and so on).
+Capture microphone + system audio, transcribe each utterance locally with Whisper, and optionally hand the transcript to an AI with a scenario preset — either segment by segment (interview help) or once at the end of the session (meeting summary).
 
 Sibling of [ScreenRecon](https://github.com/kaizhengnz/ScreenRecon) — same design philosophy (long-running desktop tool, local-first, Telegram delivery), applied to speech instead of screen regions.
 
@@ -11,7 +11,9 @@ Status: **alpha**. MVP is Windows-first; macOS works if you install BlackHole; L
 Two modes, picked at launch:
 
 1. **Transcript-only** (default — no flag). Writes a plain-text transcript file under your save directory. Nothing goes to the cloud. Useful for recording meetings you want to search later.
-2. **AI-per-segment** (`--listen <preset>`). Same transcript, plus each completed utterance is sent to the AI with a preset-specific system prompt; the response goes to Telegram.
+2. **AI-assisted** (`--listen <preset>`). Same transcript, plus the AI is called with a preset-specific system prompt. Presets fall into two families:
+   - **Live** (`interview_candidate`, `interview_recruiter`) — the AI runs after each completed utterance and pushes its reply to Telegram in real time.
+   - **On shutdown** (`meeting_summary`) — the AI runs once when you press Ctrl+C, over the entire session's transcript. The reply is saved to a file in `save_dir` and also pushed to Telegram. If nothing was recorded, the call is skipped.
 
 Both modes segment audio when either:
 - silence exceeds the configured threshold (`speech_silence_seconds`, default 1.5 s), or
@@ -45,8 +47,11 @@ voicerecon --configure
 # Transcript-only listening
 voicerecon
 
-# Listen and translate the other party's speech into Chinese
-voicerecon --listen translate
+# Live help while being interviewed — AI reacts to each question the interviewer asks
+voicerecon --listen interview_candidate
+
+# One summary of the whole session, delivered when you hit Ctrl+C
+voicerecon --listen meeting_summary
 
 # See what presets exist
 voicerecon --presets
@@ -60,18 +65,15 @@ voicerecon --show
 
 ## Built-in AI presets
 
-| Preset | Filter | Context | Purpose |
-| --- | --- | --- | --- |
-| `translate` | them | current | translate the other party's speech into Chinese |
-| `interview_candidate` | them | current | analyze the interviewer's question, outline an answer |
-| `interview_recruiter` | them | last 5 min | evaluate the candidate's answer, suggest a follow-up |
-| `lecture` | them | last 5 min | extract the key concept from a lecture excerpt |
-| `speaking` | me | current | give feedback on your own spoken sentence |
-| `debate` | them | last 3 min | suggest counter-arguments |
-| `sales` | them | current | identify customer need and suggest a talking point |
+| Preset | Filter | Trigger | Context | Purpose |
+| --- | --- | --- | --- | --- |
+| `interview_candidate` | them | per segment | current | analyze the interviewer's question, outline an answer |
+| `interview_recruiter` | them | per segment | last 5 min | evaluate the candidate's answer, suggest a follow-up |
+| `meeting_summary` | both | on shutdown | full session | summarize topics, decisions, and action items at Ctrl+C |
 
 - **Filter** — `them` (system audio only), `me` (mic only), or `both`. Segments from ignored streams are dropped, not sent.
-- **Context** — `current` sends only the segment that just finished. `window:<seconds>` sends every segment within that many seconds behind it.
+- **Trigger** — `per segment` fires after each matching utterance and pushes the reply to Telegram immediately. `on shutdown` fires once at Ctrl+C over the whole session, saves the reply to a file in `save_dir` as `<preset>-YYYYMMDD-HHMMSS.txt`, and also pushes it to Telegram. When nothing was recorded, the `on shutdown` call is skipped.
+- **Context** — applies only to per-segment presets. `current` sends only the segment that just finished. `window:<seconds>` sends every segment within that many seconds behind it.
 
 ## Config file
 

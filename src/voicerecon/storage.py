@@ -48,3 +48,24 @@ def normalise_dir(save_dir: str | os.PathLike[str]) -> Path:
 def resolve_dir(save_dir: str | os.PathLike[str]) -> Path:
     """Normalise the path, create the directory owner-only, and return it."""
     return make_private_dir(normalise_dir(save_dir))
+
+
+def new_private_file(
+    save_dir: str | os.PathLike[str], stem: str, *, suffix: str = ".txt"
+) -> Path:
+    """Reserve ``<save_dir>/<stem><suffix>`` and create it empty and owner-only.
+
+    Same-second collisions (two sessions started back to back) are resolved
+    by appending ``_1``, ``_2`` and so on to the stem. Raises ``OSError`` or
+    ``RuntimeError`` if the directory cannot be resolved / created, or if
+    the file cannot be touched atomically.
+    """
+    directory = resolve_dir(save_dir)
+    path = directory / f"{stem}{suffix}"
+    counter = 1
+    while path.exists():
+        path = directory / f"{stem}_{counter}{suffix}"
+        counter += 1
+    path.touch(exist_ok=False)
+    restrict(path, PRIVATE_FILE_MODE)
+    return path

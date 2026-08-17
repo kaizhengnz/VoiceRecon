@@ -4,10 +4,16 @@ Each preset declares:
 
 - ``speaker_filter`` — which stream to consume. Segments from the ignored
   stream are dropped, not sent. Values: ``"both"``, ``"them"``, ``"me"``.
-- ``context`` — what payload to include. ``"current"`` sends only the current
-  segment. ``"window:<seconds>"`` sends every segment (subject to the same
-  speaker filter) whose end timestamp falls within the last N seconds.
+- ``context`` — what payload to include (per-segment triggers only).
+  ``"current"`` sends only the segment that fired the trigger.
+  ``"window:<seconds>"`` sends every retained segment (subject to the same
+  speaker filter) whose end timestamp is within the last N seconds. Ignored
+  when ``trigger`` is ``"on_shutdown"``.
 - ``prompt`` — the system prompt shown to the model.
+- ``trigger`` — when to call the AI. ``"per_segment"`` fires after each
+  matching utterance (the default). ``"on_shutdown"`` fires once at Ctrl+C
+  over the full session transcript, and its output is also saved to a file
+  in ``save_dir`` alongside the transcript.
 
 Selecting no preset yields transcript-only mode: segments are still written
 to the local transcript file, but no AI call is made and Telegram is not
@@ -20,6 +26,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 SpeakerFilter = Literal["both", "them", "me"]
+Trigger = Literal["per_segment", "on_shutdown"]
 
 
 @dataclass(frozen=True)
@@ -31,19 +38,15 @@ class Preset:
     context: str
     prompt: str
     description: str
+    trigger: Trigger = "per_segment"
+
+    @property
+    def is_batch(self) -> bool:
+        """True when the AI fires once at Ctrl+C rather than per segment."""
+        return self.trigger == "on_shutdown"
 
 
 BUILT_IN: dict[str, Preset] = {
-    "translate": Preset(
-        name="translate",
-        speaker_filter="them",
-        context="current",
-        prompt=(
-            "Translate the following speech into Chinese. Output only the translation; "
-            "no explanation, no prefix."
-        ),
-        description="translate the other party's speech into Chinese",
-    ),
     "interview_candidate": Preset(
         name="interview_candidate",
         speaker_filter="them",
@@ -66,49 +69,20 @@ BUILT_IN: dict[str, Preset] = {
         ),
         description="interview help for the recruiter side",
     ),
-    "lecture": Preset(
-        name="lecture",
-        speaker_filter="them",
-        context="window:300",
-        prompt=(
-            "You are taking notes on a lecture. Given the recent excerpt below, "
-            "extract the key concept being taught and briefly explain any technical "
-            "term that a beginner might not know."
-        ),
-        description="lecture note-taking helper",
-    ),
-    "speaking": Preset(
-        name="speaking",
-        speaker_filter="me",
+    "meeting_summary": Preset(
+        name="meeting_summary",
+        speaker_filter="both",
         context="current",
         prompt=(
-            "The reader is practising spoken language. Below is what they just said. "
-            "Give short, specific feedback on grammar, word choice, and naturalness. "
-            "If the sentence is fine, say so."
+            "The following is the full transcript of a conversation. "
+            "[them] marks the other party, [me] marks the user. "
+            "Produce a concise summary covering the main topics discussed, "
+            "decisions reached, and any action items or open questions. "
+            "Reply in the same language the conversation was primarily in, "
+            "structured with short headers."
         ),
-        description="spoken-language practice feedback",
-    ),
-    "debate": Preset(
-        name="debate",
-        speaker_filter="them",
-        context="window:180",
-        prompt=(
-            "You are helping the reader argue against the speaker below. Given the "
-            "recent statements, suggest one or two strong counter-arguments the "
-            "reader could use."
-        ),
-        description="debate / discussion counter-argument helper",
-    ),
-    "sales": Preset(
-        name="sales",
-        speaker_filter="them",
-        context="current",
-        prompt=(
-            "You are assisting a salesperson on a live call. Given the customer's "
-            "latest statement below, identify their underlying need and sentiment, "
-            "and suggest one talking point the salesperson could use next."
-        ),
-        description="sales / customer service talking-point helper",
+        description="summarize the whole session once at Ctrl+C",
+        trigger="on_shutdown",
     ),
 }
 
