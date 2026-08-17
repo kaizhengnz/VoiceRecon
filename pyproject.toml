@@ -36,7 +36,7 @@ dependencies = [
     # Mic capture uses PortAudio via sounddevice — soundcard's Windows
     # backend asserts a WAVEFORMATEXTENSIBLE mix format that many consumer
     # mics do not report and crashes the capture thread.
-    "sounddevice>=0.4.6",
+    "sounddevice>=0.5.6",
     # Local STT engine. faster-whisper wraps CTranslate2.
     "faster-whisper>=1.0",
     # Voice activity detection. ONNX runtime, no PyTorch dependency.

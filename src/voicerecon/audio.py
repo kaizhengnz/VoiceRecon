@@ -175,42 +175,6 @@ def _soundcard_loopback_recorder(
     return mic.recorder(samplerate=samplerate, channels=1)
 
 
-def _import_sounddevice() -> Any:
-    """Import :mod:`sounddevice`, working around a Windows-on-ARM issue.
-
-    An x86_64 Python running under emulation on Windows-on-ARM reports
-    ``platform.machine() == 'ARM64'`` because that's the OS's native
-    architecture, but the process itself is x86_64. ``sounddevice``'s
-    module-level DLL picker only looks at ``platform.machine()`` and
-    picks ``libportaudioarm64.dll`` — which an x86_64 process cannot
-    load. We patch ``platform.machine`` for the duration of the import
-    so the picker lands on ``libportaudio64bit.dll`` (already bundled
-    in the wheel), then restore it. Only runs the first time we import
-    ``sounddevice``; every later call returns the cached module.
-    """
-    import sys
-
-    if "sounddevice" in sys.modules:
-        return sys.modules["sounddevice"]
-
-    import platform as _platform
-
-    if (
-        sys.platform == "win32"
-        and _platform.machine().lower() in ("arm64", "aarch64")
-    ):
-        original = _platform.machine
-        _platform.machine = lambda: "AMD64"  # type: ignore[assignment]
-        try:
-            import sounddevice as sd  # type: ignore[import-not-found]
-        finally:
-            _platform.machine = original  # type: ignore[assignment]
-        return sd
-
-    import sounddevice as sd  # type: ignore[import-not-found]
-    return sd
-
-
 def _sounddevice_mic_recorder(
     *, device_name: str | None, samplerate: int
 ) -> Any:
@@ -241,7 +205,8 @@ class _MicRecorder:
         self._stream: Any = None
 
     def __enter__(self) -> _MicRecorder:
-        sd = _import_sounddevice()
+        import sounddevice as sd  # type: ignore[import-not-found]
+
         self._stream = sd.InputStream(
             device=self._device,
             samplerate=self._samplerate,
