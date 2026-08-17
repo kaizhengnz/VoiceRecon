@@ -259,7 +259,6 @@ def _ask_choice(
 ) -> str:
     current_index = len(presets) + 1
     labels = [preset_label for preset_label, _, _ in presets]
-    width = max(len(preset_label) for preset_label in labels) if labels else 0
     current_preview = current if len(current) <= 60 else current[:57] + "..."
 
     default_index = current_index
@@ -269,12 +268,40 @@ def _ask_choice(
                 default_index = index
                 break
 
+    current_matching_index: int | None = None
+    for index, (_, preset_value, _) in enumerate(presets, start=1):
+        if preset_value == current:
+            current_matching_index = index
+            break
+    current_label = (
+        f"Current {label} = {current_matching_index}"
+        if current_matching_index is not None
+        else f"Current {label}"
+    )
+
+    # Trailing parens: prefer the matching preset's note (aligns with the note
+    # column above); fall back to its label to preserve display-name casing and
+    # any parenthesised annotation baked into the label; otherwise show a
+    # preview of the raw value.
+    if current_matching_index is not None:
+        matching_label, _, matching_note = presets[current_matching_index - 1]
+        current_display = matching_note or matching_label
+    else:
+        current_display = current_preview
+
+    # Pad the label column only when at least one preset has a note to align
+    # to; note-less lists would otherwise get a huge blank gap before the
+    # trailing parens.
+    have_any_note = any(note for _, _, note in presets)
+    width = max([len(l) for l in labels] + [len(current_label)]) if have_any_note else 0
+
     for index, (preset_label, _, note) in enumerate(presets, start=1):
-        ui.info(f"    {index}) {preset_label:<{width}}  ({note})")
-    ui.info(f"    {current_index}) (keep current — {current_preview})")
+        suffix = f"  ({note})" if note else ""
+        ui.info(f"    {index}) {preset_label:<{width}}{suffix}".rstrip())
+    ui.info(f"    {current_index}) {current_label:<{width}}  ({current_display})")
 
     for _ in range(MAX_PROMPT_RETRIES):
-        prompt_label = f"    Enter 1-{current_index} or type any {label}"
+        prompt_label = f"Enter 1-{current_index} or type any {label}"
         answer = _ask(prompt_label, str(default_index)).strip()
         if answer.isdigit():
             number = int(answer)
@@ -282,7 +309,7 @@ def _ask_choice(
                 return presets[number - 1][1]
             if number == current_index:
                 return current
-            ui.warn(f"    Choice must be 1-{current_index}, please try again.")
+            ui.warn(f"Choice must be 1-{current_index}, please try again.")
             continue
         return answer
     raise WizardAborted(f"{label}: too many invalid answers, giving up.")
