@@ -52,3 +52,37 @@ def rule(title: str = "") -> None:
         print(f"\n---- {title} " + "-" * max(0, 40 - len(title)), flush=True)
     else:
         print("-" * 48, flush=True)
+
+
+class SentenceStreamPrinter:
+    """Buffer chunks from a streaming API and flush at sentence boundaries.
+
+    Any of ``.!?。！？\\n`` counts as a sentence end. Chunks that don't
+    contain one accumulate silently; :meth:`flush` prints whatever is
+    left plus a trailing newline.
+    """
+
+    _TERMINATORS = ".!?。！？\n"
+
+    def __init__(self) -> None:
+        self._buffer: list[str] = []
+
+    def push(self, chunk: str) -> None:
+        self._buffer.append(chunk)
+        joined = "".join(self._buffer)
+        idx = -1
+        for term in self._TERMINATORS:
+            found = joined.rfind(term)
+            if found > idx:
+                idx = found
+        if idx < 0:
+            return
+        print(joined[: idx + 1], end="", flush=True)
+        remainder = joined[idx + 1 :]
+        self._buffer = [remainder] if remainder else []
+
+    def flush(self) -> None:
+        if self._buffer:
+            print("".join(self._buffer), end="", flush=True)
+            self._buffer = []
+        print(flush=True)
