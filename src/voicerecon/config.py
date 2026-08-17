@@ -178,10 +178,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
 
 def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
-    """Refuse to start AI-per-segment mode when any credential is empty.
+    """Refuse to start AI mode when any credential is empty.
 
-    Only called when the user selects ``--listen <preset>``. Pure
-    transcript mode does not need any of these fields.
+    Called when the user selects ``--listen <preset>`` or ``--prompt "..."``.
+    Pure transcript mode does not need any of these fields.
     """
     missing = [
         _CREDENTIAL_LABELS[field]
@@ -190,9 +190,9 @@ def require_credentials_for_ai(cfg: dict[str, Any]) -> None:
     ]
     if missing:
         raise ConfigError(
-            "AI preset needs: " + ", ".join(missing) + ".\n"
-            "Run 'voicerecon --configure' to set them, or run without --listen "
-            "for transcript-only mode."
+            "AI mode needs: " + ", ".join(missing) + ".\n"
+            "Run 'voicerecon --configure' to set them, or run without "
+            "--listen / --prompt for transcript-only mode."
         )
 
 

@@ -98,3 +98,45 @@ def get(name: str) -> Preset:
 
 def names() -> list[str]:
     return sorted(BUILT_IN)
+
+
+CUSTOM_NAME = "custom"
+_DESCRIPTION_MAX_LEN = 60
+
+
+def make_custom(
+    prompt: str, *, speaker_filter: str = "them", context_spec: str = "current"
+) -> Preset:
+    """Build an ad-hoc streaming preset from user-supplied CLI values.
+
+    Raises ``ValueError`` when the prompt is empty, the speaker filter is
+    outside ``them/me/both``, or the context spec cannot be parsed. Batch
+    (``on_shutdown``) is not offered via this path — the built-in
+    ``meeting_summary`` preset is the sole way to get end-of-session
+    summarization.
+    """
+    from . import context  # local import avoids a cycle at module load
+
+    cleaned = (prompt or "").strip()
+    if not cleaned:
+        raise ValueError("--prompt requires non-empty text")
+    if speaker_filter not in ("them", "me", "both"):
+        raise ValueError(
+            f"speaker filter must be one of them/me/both; got {speaker_filter!r}"
+        )
+    context.parse(context_spec)  # raises ValueError on bad specs
+
+    return Preset(
+        name=CUSTOM_NAME,
+        speaker_filter=speaker_filter,
+        context=context_spec,
+        prompt=cleaned,
+        description=_summarize_prompt(cleaned),
+    )
+
+
+def _summarize_prompt(prompt: str) -> str:
+    single_line = " ".join(prompt.split())
+    if len(single_line) <= _DESCRIPTION_MAX_LEN:
+        return single_line
+    return single_line[: _DESCRIPTION_MAX_LEN - 3] + "..."

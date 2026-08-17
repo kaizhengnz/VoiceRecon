@@ -39,15 +39,13 @@ def _secrets(cfg: Mapping[str, Any]) -> list[str]:
     return [str(cfg.get(key) or "") for key in config.CREDENTIAL_FIELDS]
 
 
-def run(cfg: Mapping[str, Any], preset_name: str | None) -> int:
+def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
     hint = platform_check.loopback_hint()
     if hint:
         ui.warn(hint)
-
-    preset = presets.get(preset_name) if preset_name else None
 
     writer = transcript.TranscriptWriter(str(cfg["save_dir"]))
     seg = segmenter.Segmenter()
@@ -86,7 +84,10 @@ def run(cfg: Mapping[str, Any], preset_name: str | None) -> int:
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
-        ui.info(f"Mode: --listen {preset.name} — {preset.description}")
+        if preset.name == presets.CUSTOM_NAME:
+            ui.info(f"Mode: --prompt — {preset.description}")
+        else:
+            ui.info(f"Mode: --listen {preset.name} — {preset.description}")
         if preset.is_batch:
             ui.info(f"  speaker filter: {preset.speaker_filter}   trigger: on shutdown (Ctrl+C)")
         else:

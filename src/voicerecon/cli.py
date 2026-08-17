@@ -17,6 +17,8 @@ examples:
                                    listen + interview-answer helper (per-segment)
   voicerecon --listen meeting_summary
                                    listen + summarize the whole session at Ctrl+C
+  voicerecon --prompt "translate every segment into English"
+                                   custom per-segment prompt (streaming only)
   voicerecon --configure           first-time interactive setup
   voicerecon --show                print the current config (credentials masked)
   voicerecon --show-devices        list detected audio input / loopback devices
@@ -39,6 +41,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--listen",
         metavar="PRESET",
         help="enable AI-per-segment mode with the named preset (see --presets)",
+    )
+    parser.add_argument(
+        "--prompt",
+        metavar="TEXT",
+        help=(
+            "enable AI-per-segment mode with a custom prompt "
+            "(streaming only; for a session summary use --listen meeting_summary)"
+        ),
+    )
+    parser.add_argument(
+        "--from",
+        dest="speaker_filter",
+        choices=("them", "me", "both"),
+        default=None,
+        help="override the speaker filter for --prompt (default: them)",
+    )
+    parser.add_argument(
+        "--context",
+        dest="context_spec",
+        metavar="SPEC",
+        default=None,
+        help=(
+            "override the context spec for --prompt: 'current' or "
+            "'window:<seconds>' (default: current)"
+        ),
     )
     parser.add_argument(
         "--configure", action="store_true", help="run the interactive setup wizard"
@@ -141,10 +168,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"--{exclusive[0].replace('_', '-')} and --{exclusive[1].replace('_', '-')} "
             "cannot be combined; run one at a time"
         )
-    if exclusive and args.listen:
+    if exclusive and (args.listen or args.prompt):
         parser.error(
-            f"--{exclusive[0].replace('_', '-')} cannot be combined with --listen"
+            f"--{exclusive[0].replace('_', '-')} cannot be combined with --listen or --prompt"
         )
+    if args.listen and args.prompt:
+        parser.error("--listen and --prompt cannot be combined; pick one")
+    if (args.speaker_filter is not None or args.context_spec is not None) and not args.prompt:
+        parser.error("--from and --context require --prompt")
 
     if args.presets:
         _print_presets()
@@ -173,18 +204,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         cfg = config.load(args.config_path)
 
-        preset_name: str | None = None
+        preset: presets.Preset | None = None
         if args.listen:
-            preset_name = args.listen
             try:
-                presets.get(preset_name)
+                preset = presets.get(args.listen)
             except KeyError as exc:
+                ui.error(str(exc))
+                return 1
+            config.require_credentials_for_ai(cfg)
+        elif args.prompt:
+            try:
+                preset = presets.make_custom(
+                    args.prompt,
+                    speaker_filter=args.speaker_filter or "them",
+                    context_spec=args.context_spec or "current",
+                )
+            except ValueError as exc:
                 ui.error(str(exc))
                 return 1
             config.require_credentials_for_ai(cfg)
 
         from . import runner
-        return runner.run(cfg, preset_name)
+        return runner.run(cfg, preset)
 
     except config.ConfigError as exc:
         ui.error(str(exc))
