@@ -133,10 +133,17 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         callback=_loop_callback,
     )
 
+    # Preload Whisper synchronously so the first commit_step doesn't pay the
+    # CTranslate2 init + weights load on the audio critical path — that would
+    # otherwise stall the streaming pipeline and, if the user Ctrl+C's before
+    # the first pass returns, freeze the shutdown flush too.
+    ui.info(f"Loading Whisper ({model_size})…")
+    _model_factory()
+
     ui.rule("VoiceRecon listening")
     ui.info(f"Save directory: {cfg['save_dir']}")
     ui.info(f"Silence threshold: {cfg['speech_silence_seconds']}s")
-    ui.info(f"Whisper model: {model_size} (loads on first speech)")
+    ui.info(f"Whisper model: {model_size}")
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
@@ -184,6 +191,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     except KeyboardInterrupt:
         ui.info("\nStopping…")
     finally:
+        ui.info("Finalizing…")
         for item in seg.flush(time.monotonic()):
             _flush_boundary(item)
         if preset is not None and preset.is_batch:
