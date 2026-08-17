@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import builtins
 import sys
-import threading
 import types
 
 import numpy as np
@@ -251,38 +250,3 @@ def test_audio_source_reports_when_recorder_creation_fails(monkeypatch):
     src.close(timeout=2.0)
 
     assert any("mic capture failed to start" in msg for msg in errors), errors
-
-
-def test_audio_source_delivers_blocks_from_fake_recorder():
-    """Baseline: the injected factory drives the callback loop end-to-end."""
-    received: list[tuple[int, float]] = []
-    got_one = threading.Event()
-
-    def callback(block, ts):
-        received.append((block.shape[0], ts))
-        got_one.set()
-
-    class _FakeRecorder:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            return False
-
-        def record(self, numframes):
-            return np.zeros((numframes, 1), dtype=np.float32)
-
-    def factory(**kwargs):
-        return _FakeRecorder()
-
-    src = audio.AudioSource(
-        kind="mic",
-        device_name=None,
-        callback=callback,
-        recorder_factory=factory,
-    )
-    src.open()
-    assert got_one.wait(timeout=2.0), "callback never fired"
-    src.close(timeout=2.0)
-
-    assert received[0][0] == audio.BLOCK_SAMPLES

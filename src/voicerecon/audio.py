@@ -101,10 +101,8 @@ class AudioSource:
             recorder_cm = self._resolve_recorder()
             recorder = recorder_cm.__enter__()
         except Exception as exc:
-            # Recorder creation failure (bad device name, missing driver,
-            # library backend crash) would otherwise dump a traceback from
-            # the daemon thread and silently stop transcribing this side of
-            # the conversation. Report it and exit cleanly instead.
+            # Report cleanly so a daemon-thread traceback doesn't hide the
+            # fact that this side of the conversation stopped transcribing.
             ui.error(
                 f"{self.kind} capture failed to start "
                 f"({type(exc).__name__}): {exc}. "
@@ -132,8 +130,8 @@ class AudioSource:
         finally:
             try:
                 recorder_cm.__exit__(None, None, None)
-            except Exception:
-                pass
+            except Exception as exc:
+                ui.warn(f"{self.kind} recorder cleanup failed ({type(exc).__name__}): {exc}")
 
     def _resolve_recorder(self) -> Any:
         if self._recorder_factory is not None:
@@ -196,17 +194,10 @@ def _import_sounddevice() -> Any:
         return sys.modules["sounddevice"]
 
     import platform as _platform
-    import struct
 
-    # Patch when the OS reports ARM but the process is 64-bit Windows —
-    # sounddevice's picker can't distinguish x86_64 emulation from native
-    # ARM64. If the user actually ran an ARM64-native Python the AMD64
-    # DLL would fail to load and they'd get a clear error; that separate
-    # (rarer) case is out of scope here.
     if (
         sys.platform == "win32"
         and _platform.machine().lower() in ("arm64", "aarch64")
-        and struct.calcsize("P") * 8 == 64
     ):
         original = _platform.machine
         _platform.machine = lambda: "AMD64"  # type: ignore[assignment]
@@ -271,8 +262,6 @@ class _MicRecorder:
     def record(self, numframes: int) -> np.ndarray:
         assert self._stream is not None, "record() before __enter__()"
         data, _overflowed = self._stream.read(numframes)
-        # PortAudio returns shape (frames, channels); _to_mono_float32
-        # handles the downmix on the callback side.
         return data
 
 
