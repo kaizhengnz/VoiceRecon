@@ -268,7 +268,7 @@ def _ask_choice(
                 default_index = index
                 break
 
-    current_matching_index: int | None = None
+    current_matching_index = None
     for index, (_, preset_value, _) in enumerate(presets, start=1):
         if preset_value == current:
             current_matching_index = index
@@ -293,7 +293,11 @@ def _ask_choice(
     # to; note-less lists would otherwise get a huge blank gap before the
     # trailing parens.
     have_any_note = any(note for _, _, note in presets)
-    width = max([len(l) for l in labels] + [len(current_label)]) if have_any_note else 0
+    width = (
+        max([len(preset_label) for preset_label in labels] + [len(current_label)])
+        if have_any_note
+        else 0
+    )
 
     for index, (preset_label, _, note) in enumerate(presets, start=1):
         suffix = f"  ({note})" if note else ""
