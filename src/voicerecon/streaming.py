@@ -39,6 +39,12 @@ speaker never pauses long enough for VAD ``end`` to fire (e.g. continuous
 30 s+ monologue with no micro-pause), the oldest samples are dropped and
 the local-agreement priming is reset."""
 
+MAX_PROMPT_WORDS = 60
+"""How many trailing committed words to feed back as Whisper's
+``initial_prompt`` on the next pass. Enough to stabilise the decoder's
+tokenisation of the fresh audio without approaching Whisper's ~200-token
+prompt window."""
+
 
 class StreamingTranscriber:
     """Feed audio, poll ``commit_step`` for stabilised text."""
@@ -57,6 +63,7 @@ class StreamingTranscriber:
         self._sample_rate = sample_rate
         self._buffer = np.empty(0, dtype=np.float32)
         self._prev_words: list[str] = []
+        self._committed_text: list[str] = []
         self._lock = threading.Lock()
 
     def _ensure_model(self) -> Any:
@@ -85,13 +92,14 @@ class StreamingTranscriber:
             if self._buffer.size < self._min_chunk_samples:
                 return ""
             snapshot = self._buffer
+            prompt = self._build_prompt()
         # Transcribe outside the lock. Trim below operates on self._buffer
         # (possibly extended by feed() in the meantime) from the front —
         # correct because feed() only appends, so the origin stays aligned
         # to the snapshot. If feed()'s emergency trim fires while we run,
         # it clears self._prev_words, which forces the lcp check below to
         # reprime instead of trim (see the `if not lcp` branch).
-        words = self._transcribe_words(snapshot)
+        words = self._transcribe_words(snapshot, prompt=prompt)
         if not words:
             with self._lock:
                 self._prev_words = []
@@ -108,6 +116,7 @@ class StreamingTranscriber:
                 trim_samples = self._buffer.size
             self._buffer = self._buffer[trim_samples:]
             self._prev_words = texts[commit_count:]
+            self._committed_text.extend(lcp)
         return "".join(lcp)
 
     def finalize(self) -> str:
@@ -117,7 +126,8 @@ class StreamingTranscriber:
                 self._prev_words = []
                 return ""
             snapshot = self._buffer
-        words = self._transcribe_words(snapshot)
+            prompt = self._build_prompt()
+        words = self._transcribe_words(snapshot, prompt=prompt)
         text = "".join(w.word for w in words)
         self.reset()
         return text
@@ -126,12 +136,25 @@ class StreamingTranscriber:
         with self._lock:
             self._buffer = np.empty(0, dtype=np.float32)
             self._prev_words = []
+            self._committed_text = []
 
-    def _transcribe_words(self, audio: np.ndarray) -> list[Any]:
+    def _build_prompt(self) -> str:
+        """Return the trailing committed text passed to Whisper as its
+        ``initial_prompt`` on the next pass. Biases the decoder to produce
+        the same tokenisation for the just-committed context, which is
+        what lets LocalAgreement-2 converge on real speech instead of
+        thrashing on tokenisation drift."""
+        return "".join(self._committed_text[-MAX_PROMPT_WORDS:]).strip()
+
+    def _transcribe_words(self, audio: np.ndarray, *, prompt: str = "") -> list[Any]:
         try:
             model = self._ensure_model()
             segments, _ = model.transcribe(
-                audio, language=None, vad_filter=False, word_timestamps=True
+                audio,
+                language=None,
+                vad_filter=False,
+                word_timestamps=True,
+                initial_prompt=prompt or None,
             )
             out: list[Any] = []
             for segment in segments:
@@ -143,9 +166,12 @@ class StreamingTranscriber:
 
 
 def _common_prefix(a: list[str], b: list[str]) -> list[str]:
+    """Longest agreeing prefix, tolerant of Whisper's leading-space and case
+    drift across passes; the returned text keeps ``a``'s original formatting
+    so downstream printing is not stripped of its natural word boundaries."""
     out: list[str] = []
     for x, y in zip(a, b):
-        if x != y:
+        if x.strip().lower() != y.strip().lower():
             break
         out.append(x)
     return out

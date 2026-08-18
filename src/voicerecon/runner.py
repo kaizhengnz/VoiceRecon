@@ -171,7 +171,8 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         if not chunk:
             return
         if not accumulated[speaker]:
-            print(f"[{speaker}]", end="", flush=True)
+            print(f"[{speaker}] ", end="", flush=True)
+            chunk = chunk.lstrip()
         print(chunk, end="", flush=True)
         accumulated[speaker].append(chunk)
 

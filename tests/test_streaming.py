@@ -33,9 +33,18 @@ class ScriptedModel:
     def __init__(self, hypotheses: list[list[FakeWord]]):
         self._hypotheses = list(hypotheses)
         self.calls: list[int] = []
+        self.prompts: list[str | None] = []
 
-    def transcribe(self, audio, language=None, vad_filter=False, word_timestamps=True):
+    def transcribe(
+        self,
+        audio,
+        language=None,
+        vad_filter=False,
+        word_timestamps=True,
+        initial_prompt=None,
+    ):
         self.calls.append(int(audio.size))
+        self.prompts.append(initial_prompt)
         if not self._hypotheses:
             return iter([FakeSegment(words=[])]), None
         hyp = self._hypotheses.pop(0)
@@ -184,6 +193,44 @@ def test_feed_caps_buffer_at_max_seconds_and_resets_priming():
     # another priming pass rather than immediately committing.
     st.feed(_seconds(0.1))
     assert st.commit_step() == ""
+
+
+def test_prefix_comparison_tolerates_leading_space_and_case_drift():
+    """Whisper's tokenisation shifts between passes (leading space,
+    capitalisation) on the same audio; a byte-exact compare would defeat
+    agreement on real speech, so the check normalises before comparing.
+    The current pass's formatting is emitted as-is."""
+    hyp1 = [FakeWord(" the", 0.0, 0.3), FakeWord(" Terraform", 0.3, 0.9)]
+    hyp2 = [FakeWord("The", 0.0, 0.3), FakeWord(" terraform", 0.3, 0.9)]
+    st = _st([hyp1, hyp2])
+    st.feed(_seconds(1.5))
+    st.commit_step()  # priming
+    st.feed(_seconds(0.5))
+    committed = st.commit_step()
+    # Both words agree after strip + lower even though hyp2 differs in
+    # leading-space and capitalisation, so the whole prefix is emitted.
+    assert committed.strip().lower() == "the terraform"
+    assert committed == "The terraform"
+
+
+def test_committed_text_is_fed_back_as_initial_prompt():
+    """The just-committed words go to Whisper as ``initial_prompt`` on the
+    next pass so the decoder produces consistent tokenisation for the
+    fresh audio (the standard whisper-streaming stabiliser)."""
+    hyp1 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    hyp2 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    hyp3 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    model = ScriptedModel([hyp1, hyp2, hyp3])
+    st = streaming.StreamingTranscriber(lambda: model, min_chunk_seconds=1.0)
+    st.feed(_seconds(1.5))
+    st.commit_step()  # priming; no prompt yet
+    st.feed(_seconds(0.5))
+    st.commit_step()  # commits " hello world"; still no prompt in flight
+    st.feed(_seconds(1.0))
+    st.commit_step()  # third pass sees committed text as initial_prompt
+    assert model.prompts[0] is None
+    assert model.prompts[1] is None
+    assert model.prompts[2] == "hello world"
 
 
 def test_model_loaded_lazily_on_first_transcribe():
