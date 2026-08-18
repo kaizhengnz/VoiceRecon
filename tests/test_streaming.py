@@ -181,18 +181,56 @@ def test_backend_failure_returns_empty_without_advancing_state():
     assert st.finalize() == ""
 
 
-def test_feed_caps_buffer_at_max_seconds_and_resets_priming():
-    """Non-stop audio without a VAD end must not grow the buffer unbounded."""
-    hyp = [FakeWord(" a", 0.0, 0.5)]
-    st = _st([hyp, hyp])
+def test_commit_step_force_flushes_when_buffer_hits_cap():
+    """Continuous speech that grows the buffer past MAX_BUFFER_SECONDS
+    without LocalAgreement converging is emitted as a whole-hypothesis
+    commit — the trade the streamer makes for responsiveness during
+    long turns with no VAD end. The alternative (front-trimming the
+    buffer, as an earlier revision did) destroyed the LocalAgreement
+    invariant and starved the pipeline of any output at all."""
+    # Hypotheses disagree so LocalAgreement never fires; without the
+    # force-flush branch nothing would ever be committed.
+    hyp1 = [FakeWord(" alpha", 0.0, 1.0)]
+    hyp2 = [
+        FakeWord(" beta", 0.0, 1.0),
+        FakeWord(" gamma", 1.0, 3.0),
+        FakeWord(" delta", 3.0, 5.0),
+    ]
+    st = _st([hyp1, hyp2])
     st.feed(_seconds(1.5))
-    st.commit_step()  # priming — prev_words populated
-    # Now dump 40s of audio in one shot — well past MAX_BUFFER_SECONDS.
-    st.feed(_seconds(40))
-    # Buffer capped and priming reset, so the next commit_step needs
-    # another priming pass rather than immediately committing.
-    st.feed(_seconds(0.1))
-    assert st.commit_step() == ""
+    st.commit_step()  # primes with hyp1
+    st.feed(_seconds(4.0))  # buffer is now 5.5 s, past the 5 s cap
+    assert st.commit_step() == " beta gamma delta"
+
+
+def test_force_flush_preserves_audio_added_during_the_pass():
+    """Audio that ``feed()`` appends while Whisper is running on the
+    force-flush snapshot is not discarded — it survives into the next
+    pass so continuous speech is not silently dropped at the boundary."""
+    hyp = [FakeWord(" x", 0.0, 5.0)]
+    model = ScriptedModel([hyp])
+    st = streaming.StreamingTranscriber(lambda: model, min_chunk_seconds=1.0)
+    # Trip the force-flush branch on the first pump.
+    st.feed(_seconds(5.5))
+
+    # Fake the "audio arrived during Whisper" case by adding samples
+    # after ScriptedModel.transcribe has been queued but before the
+    # commit_step's trim block re-enters the lock. The scripted model
+    # is synchronous, so we simulate the same effect by patching feed
+    # in between: easiest is to intercept transcribe.
+    real_transcribe = model.transcribe
+
+    def transcribe_and_extend(audio, **kwargs):
+        # Push 1 s of new audio while "Whisper is running".
+        st.feed(_seconds(1.0))
+        return real_transcribe(audio, **kwargs)
+
+    model.transcribe = transcribe_and_extend
+
+    st.commit_step()  # force-flush; should keep the 1 s that arrived mid-pass
+
+    # Buffer now holds only the 1 s that was added mid-pass.
+    assert st._buffer.size == streaming.SAMPLE_RATE
 
 
 def test_prefix_comparison_tolerates_leading_space_and_case_drift():

@@ -33,14 +33,14 @@ DEFAULT_MIN_CHUNK_SECONDS = 1.0
 without much perceptual gain, multi-second erodes the streaming feel."""
 
 MAX_BUFFER_SECONDS = 5.0
-"""Hard cap on the rolling buffer. Whisper can attend up to 30 s but every
-extra second of context also scales its per-pass CPU cost linearly, and
-each ``commit_step`` reruns Whisper on the full buffer. 5 s keeps a
-worst-case pass well under a second on CPU with the ``small`` model,
-which is what makes the streaming feel actually real-time; the emergency
-trim in :meth:`feed` clears priming but ``initial_prompt`` still feeds
-the committed context back on the next pass, so continuity is preserved
-across the trim."""
+"""Soft cap on the rolling buffer. LocalAgreement-2 needs the same audio
+transcribed twice for the prefixes to be compared, so trimming the front
+of the buffer would defeat agreement. Instead, when :meth:`commit_step`
+finds the buffer at or past this cap it force-commits the whole current
+Whisper hypothesis and resets — trading boundary accuracy for the
+responsiveness that makes the streaming feel real-time. Whisper on 5 s
+of audio finishes well under a second on CPU with the ``small`` model,
+which sets the worst-case first-text latency during continuous speech."""
 
 MAX_PROMPT_WORDS = 60
 """How many trailing committed words to feed back as Whisper's
@@ -81,13 +81,11 @@ class StreamingTranscriber:
             samples = samples.astype(np.float32, copy=False)
         with self._lock:
             self._buffer = np.concatenate([self._buffer, samples])
-            if self._buffer.size > self._max_buffer_samples:
-                # Continuous speech with no VAD end — drop the oldest audio
-                # to keep memory bounded. The previous hypothesis's word
-                # timings no longer align with the trimmed buffer, so clear
-                # it and let the next commit_step reprime.
-                self._buffer = self._buffer[-self._max_buffer_samples :]
-                self._prev_words = []
+            # No front-trim here: dropping the front of the buffer would
+            # defeat LocalAgreement-2, and clearing _prev_words on every
+            # audio block starves commit_step of anything to compare
+            # against. Buffer size is bounded by the force-flush branch
+            # in commit_step (see MAX_BUFFER_SECONDS).
 
     def commit_step(self) -> str:
         """Return newly committed text, or ``""`` if nothing is stable yet."""
@@ -99,9 +97,7 @@ class StreamingTranscriber:
         # Transcribe outside the lock. Trim below operates on self._buffer
         # (possibly extended by feed() in the meantime) from the front —
         # correct because feed() only appends, so the origin stays aligned
-        # to the snapshot. If feed()'s emergency trim fires while we run,
-        # it clears self._prev_words, which forces the lcp check below to
-        # reprime instead of trim (see the `if not lcp` branch).
+        # to the snapshot.
         words = self._transcribe_words(snapshot, prompt=prompt)
         if not words:
             with self._lock:
@@ -109,6 +105,25 @@ class StreamingTranscriber:
             return ""
         texts = [w.word for w in words]
         with self._lock:
+            if snapshot.size >= self._max_buffer_samples:
+                # Buffer hit the cap without LocalAgreement converging on
+                # a fresh prefix (continuous speech, tokenisation drift).
+                # Commit the whole current hypothesis and reset rather
+                # than wait forever or drop the audio silently — trading
+                # boundary accuracy for the responsiveness that makes the
+                # streaming feel real-time. Preserve any samples that
+                # feed() appended after the snapshot, so audio spoken
+                # while Whisper was running still gets transcribed next
+                # pass.
+                added = self._buffer.size - snapshot.size
+                self._buffer = (
+                    self._buffer[-added:].copy()
+                    if added > 0
+                    else np.empty(0, dtype=np.float32)
+                )
+                self._prev_words = []
+                self._committed_text.extend(texts)
+                return "".join(texts)
             lcp = _common_prefix(texts, self._prev_words)
             if not lcp:
                 self._prev_words = texts
