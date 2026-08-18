@@ -70,6 +70,16 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
+    # Tee stdout + stderr into a daily log so every session's terminal
+    # output (banner, transcript, AI reply, streaming diagnostics, third-
+    # party warnings) is also captured to disk for later analysis.
+    log_path = ui.tee_to_file(
+        Path(cfg["save_dir"]).expanduser()
+        / "logs"
+        / f"{datetime.now().strftime('%Y-%m-%d')}.log"
+    )
+    ui.info(f"Logging to {log_path}")
+
     # soundcard prints one of these on every buffer glitch on Windows loopback;
     # they interleave with transcript / AI output and are almost always harmless
     # (the VAD absorbs the missed samples). Filter by warning class — a
@@ -106,7 +116,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         return shared_model
 
     streamers: dict[str, streaming.StreamingTranscriber] = {
-        speaker: streaming.StreamingTranscriber(_model_factory)
+        speaker: streaming.StreamingTranscriber(_model_factory, label=speaker)
         for speaker in ("me", "them")
     }
     accumulated: dict[str, list[str]] = {"me": [], "them": []}

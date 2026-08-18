@@ -1,12 +1,22 @@
 """Terminal output helpers: consistent prefixes and credential masking.
 
 Every credential is masked before it reaches the terminal or a log.
+
+:func:`tee_to_file` redirects ``sys.stdout`` and ``sys.stderr`` through
+a tee wrapper so every print — from :func:`info`, from
+:mod:`voicerecon.streaming`'s diagnostics, from raw ``print`` in the
+runner, and from any third-party library — is also appended to a daily
+log file. The tee runs for the process's lifetime; there is no matching
+untee.
 """
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 MASK_KEEP = 8
 """Number of leading characters kept when masking (show first 8 only)."""
@@ -86,3 +96,51 @@ class SentenceStreamPrinter:
             print("".join(self._buffer), end="", flush=True)
             self._buffer = []
         print(flush=True)
+
+
+class _Tee:
+    """Duplicate every write to ``original`` and ``log_file`` both."""
+
+    def __init__(self, original: Any, log_file: Any) -> None:
+        self._orig = original
+        self._log = log_file
+
+    def write(self, s: str) -> int:
+        n = self._orig.write(s)
+        try:
+            self._log.write(s)
+        except Exception:
+            pass
+        return n
+
+    def flush(self) -> None:
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._orig, name)
+
+
+def tee_to_file(path: Path | str) -> Path:
+    """Tee stdout and stderr to ``path`` for the rest of the process.
+
+    Creates the parent directory if needed. Appends across runs so a
+    single daily file collects every session's output; a session header
+    line marks the boundary.
+    """
+    resolved = Path(str(path)).expanduser()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(resolved, "a", encoding="utf-8", buffering=1)
+    log_file.write(
+        f"\n=== session {datetime.now().isoformat(timespec='seconds')} ===\n"
+    )
+    log_file.flush()
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    return resolved

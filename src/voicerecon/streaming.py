@@ -21,11 +21,25 @@ so a slow transcription cannot stall the capture thread.
 
 from __future__ import annotations
 
+import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+
+
+def _dbg(label: str, msg: str) -> None:
+    """Diagnostic print used while tuning the streaming policy.
+
+    Always on for now; the goal is to see, on a real machine, whether
+    LocalAgreement is converging, whether force-flush is firing, and how
+    long each Whisper pass takes. Remove once the pipeline consistently
+    emits text during long continuous speech.
+    """
+    tag = f"stream:{label}" if label else "stream"
+    print(f"[{tag}] {msg}", file=sys.stderr, flush=True)
 
 SAMPLE_RATE = 16000
 DEFAULT_MIN_CHUNK_SECONDS = 1.0
@@ -58,15 +72,18 @@ class StreamingTranscriber:
         *,
         min_chunk_seconds: float = DEFAULT_MIN_CHUNK_SECONDS,
         sample_rate: int = SAMPLE_RATE,
+        label: str = "",
     ) -> None:
         self._model_factory = model_factory
         self._model: Any | None = None
         self._min_chunk_samples = int(min_chunk_seconds * sample_rate)
         self._max_buffer_samples = int(MAX_BUFFER_SECONDS * sample_rate)
         self._sample_rate = sample_rate
+        self._label = label
         self._buffer = np.empty(0, dtype=np.float32)
         self._prev_words: list[str] = []
         self._committed_text: list[str] = []
+        self._first_feed_logged = False
         self._lock = threading.Lock()
 
     def _ensure_model(self) -> Any:
@@ -86,6 +103,9 @@ class StreamingTranscriber:
             # audio block starves commit_step of anything to compare
             # against. Buffer size is bounded by the force-flush branch
             # in commit_step (see MAX_BUFFER_SECONDS).
+            if not self._first_feed_logged:
+                self._first_feed_logged = True
+                _dbg(self._label, f"feed: first audio arrived ({samples.size} samples)")
 
     def commit_step(self) -> str:
         """Return newly committed text, or ``""`` if nothing is stable yet."""
@@ -94,27 +114,28 @@ class StreamingTranscriber:
                 return ""
             snapshot = self._buffer
             prompt = self._build_prompt()
+        buf_s = snapshot.size / self._sample_rate
+        at_cap = snapshot.size >= self._max_buffer_samples
         # Transcribe outside the lock. Trim below operates on self._buffer
         # (possibly extended by feed() in the meantime) from the front —
         # correct because feed() only appends, so the origin stays aligned
         # to the snapshot.
+        started = time.monotonic()
         words = self._transcribe_words(snapshot, prompt=prompt)
-        if not words:
-            with self._lock:
-                self._prev_words = []
-            return ""
+        whisper_s = time.monotonic() - started
+        _dbg(
+            self._label,
+            f"pump buf={buf_s:.2f}s whisper={whisper_s:.2f}s words={len(words)}"
+            f"{' at-cap' if at_cap else ''}",
+        )
         texts = [w.word for w in words]
         with self._lock:
-            if snapshot.size >= self._max_buffer_samples:
-                # Buffer hit the cap without LocalAgreement converging on
-                # a fresh prefix (continuous speech, tokenisation drift).
-                # Commit the whole current hypothesis and reset rather
-                # than wait forever or drop the audio silently — trading
-                # boundary accuracy for the responsiveness that makes the
-                # streaming feel real-time. Preserve any samples that
-                # feed() appended after the snapshot, so audio spoken
-                # while Whisper was running still gets transcribed next
-                # pass.
+            if at_cap:
+                # Buffer hit the cap. Commit whatever Whisper returned
+                # (empty list included — that means the tail was silent
+                # or unintelligible and there's no point re-transcribing
+                # the same audio next pass) and reset. Preserve any
+                # samples feed() appended after the snapshot.
                 added = self._buffer.size - snapshot.size
                 self._buffer = (
                     self._buffer[-added:].copy()
@@ -122,11 +143,19 @@ class StreamingTranscriber:
                     else np.empty(0, dtype=np.float32)
                 )
                 self._prev_words = []
-                self._committed_text.extend(texts)
+                if texts:
+                    self._committed_text.extend(texts)
+                    _dbg(self._label, f"  force-flush emit {len(texts)} words: {''.join(texts)!r}")
+                else:
+                    _dbg(self._label, "  force-flush empty (no words); buffer reset")
                 return "".join(texts)
+            if not words:
+                self._prev_words = []
+                return ""
             lcp = _common_prefix(texts, self._prev_words)
             if not lcp:
                 self._prev_words = texts
+                _dbg(self._label, f"  prime prev={len(texts)}: {''.join(texts)!r}")
                 return ""
             commit_count = len(lcp)
             trim_samples = int(words[commit_count - 1].end * self._sample_rate)
@@ -135,6 +164,7 @@ class StreamingTranscriber:
             self._buffer = self._buffer[trim_samples:]
             self._prev_words = texts[commit_count:]
             self._committed_text.extend(lcp)
+            _dbg(self._label, f"  commit lcp={commit_count}: {''.join(lcp)!r}")
         return "".join(lcp)
 
     def finalize(self) -> str:
