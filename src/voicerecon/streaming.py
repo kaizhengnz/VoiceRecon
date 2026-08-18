@@ -21,7 +21,7 @@ so a slow transcription cannot stall the capture thread.
 
 from __future__ import annotations
 
-import sys
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -29,17 +29,7 @@ from typing import Any
 
 import numpy as np
 
-
-def _dbg(label: str, msg: str) -> None:
-    """Diagnostic print used while tuning the streaming policy.
-
-    Always on for now; the goal is to see, on a real machine, whether
-    LocalAgreement is converging, whether force-flush is firing, and how
-    long each Whisper pass takes. Remove once the pipeline consistently
-    emits text during long continuous speech.
-    """
-    tag = f"stream:{label}" if label else "stream"
-    print(f"[{tag}] {msg}", file=sys.stderr, flush=True)
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 DEFAULT_MIN_CHUNK_SECONDS = 1.0
@@ -105,7 +95,10 @@ class StreamingTranscriber:
             # in commit_step (see MAX_BUFFER_SECONDS).
             if not self._first_feed_logged:
                 self._first_feed_logged = True
-                _dbg(self._label, f"feed: first audio arrived ({samples.size} samples)")
+                logger.debug(
+                    "[%s] feed: first audio arrived (%d samples)",
+                    self._label, samples.size,
+                )
 
     def commit_step(self) -> str:
         """Return newly committed text, or ``""`` if nothing is stable yet."""
@@ -123,10 +116,10 @@ class StreamingTranscriber:
         started = time.monotonic()
         words = self._transcribe_words(snapshot, prompt=prompt)
         whisper_s = time.monotonic() - started
-        _dbg(
-            self._label,
-            f"pump buf={buf_s:.2f}s whisper={whisper_s:.2f}s words={len(words)}"
-            f"{' at-cap' if at_cap else ''}",
+        logger.debug(
+            "[%s] pump buf=%.2fs whisper=%.2fs words=%d%s",
+            self._label, buf_s, whisper_s, len(words),
+            " at-cap" if at_cap else "",
         )
         texts = [w.word for w in words]
         with self._lock:
@@ -145,9 +138,12 @@ class StreamingTranscriber:
                 self._prev_words = []
                 if texts:
                     self._committed_text.extend(texts)
-                    _dbg(self._label, f"  force-flush emit {len(texts)} words: {''.join(texts)!r}")
+                    logger.debug(
+                        "[%s]   force-flush emit %d words: %r",
+                        self._label, len(texts), "".join(texts),
+                    )
                 else:
-                    _dbg(self._label, "  force-flush empty (no words); buffer reset")
+                    logger.debug("[%s]   force-flush empty (no words); buffer reset", self._label)
                 return "".join(texts)
             if not words:
                 self._prev_words = []
@@ -155,7 +151,10 @@ class StreamingTranscriber:
             lcp = _common_prefix(texts, self._prev_words)
             if not lcp:
                 self._prev_words = texts
-                _dbg(self._label, f"  prime prev={len(texts)}: {''.join(texts)!r}")
+                logger.debug(
+                    "[%s]   prime prev=%d: %r",
+                    self._label, len(texts), "".join(texts),
+                )
                 return ""
             commit_count = len(lcp)
             trim_samples = int(words[commit_count - 1].end * self._sample_rate)
@@ -164,7 +163,10 @@ class StreamingTranscriber:
             self._buffer = self._buffer[trim_samples:]
             self._prev_words = texts[commit_count:]
             self._committed_text.extend(lcp)
-            _dbg(self._label, f"  commit lcp={commit_count}: {''.join(lcp)!r}")
+            logger.debug(
+                "[%s]   commit lcp=%d: %r",
+                self._label, commit_count, "".join(lcp),
+            )
         return "".join(lcp)
 
     def finalize(self) -> str:

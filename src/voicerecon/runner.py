@@ -70,14 +70,11 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
-    # Tee stdout + stderr into a daily log so every session's terminal
-    # output (banner, transcript, AI reply, streaming diagnostics, third-
-    # party warnings) is also captured to disk for later analysis.
-    log_path = ui.tee_to_file(
-        Path(cfg["save_dir"]).expanduser()
-        / "logs"
-        / f"{datetime.now().strftime('%Y-%m-%d')}.log"
-    )
+    # Structured logging (level DEBUG → daily rotating file) captures
+    # info/warn/error alongside per-module diagnostics like the streaming
+    # pipeline's pump / commit / force-flush trail, so a slow or wedged
+    # session leaves enough on disk to be analysed after the fact.
+    log_path = ui.setup_logging(Path(cfg["save_dir"]).expanduser() / "logs")
     ui.info(f"Logging to {log_path}")
 
     # soundcard prints one of these on every buffer glitch on Windows loopback;

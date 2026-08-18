@@ -2,21 +2,29 @@
 
 Every credential is masked before it reaches the terminal or a log.
 
-:func:`tee_to_file` redirects ``sys.stdout`` and ``sys.stderr`` through
-a tee wrapper so every print — from :func:`info`, from
-:mod:`voicerecon.streaming`'s diagnostics, from raw ``print`` in the
-runner, and from any third-party library — is also appended to a daily
-log file. The tee runs for the process's lifetime; there is no matching
-untee.
+:func:`info` / :func:`warn` / :func:`error` write to the terminal AND
+emit a structured record on the ``voicerecon`` logger, so
+:func:`setup_logging` can attach a rotating daily :class:`FileHandler`
+without any callsite changes. Individual modules use their own
+``logging.getLogger(__name__)`` for internal diagnostics (they do not
+route through here, since those are debug-level and terminal output is
+not desired).
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterable
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from typing import Any
+
+_LOGGER = logging.getLogger("voicerecon")
+# Library default: attach a NullHandler so logging is a no-op until
+# setup_logging() runs (silences "No handlers found" and keeps tests
+# quiet).
+_LOGGER.addHandler(logging.NullHandler())
 
 MASK_KEEP = 8
 """Number of leading characters kept when masking (show first 8 only)."""
@@ -46,22 +54,27 @@ def scrub(text: str, secrets: Iterable[str | None]) -> str:
 
 def info(message: str) -> None:
     print(message, flush=True)
+    _LOGGER.info(message)
 
 
 def warn(message: str) -> None:
     print(f"[warn] {message}", flush=True)
+    _LOGGER.warning(message)
 
 
 def error(message: str) -> None:
     print(f"[error] {message}", file=sys.stderr, flush=True)
+    _LOGGER.error(message)
 
 
 def rule(title: str = "") -> None:
     """Print a separator line, optionally with a title."""
     if title:
         print(f"\n---- {title} " + "-" * max(0, 40 - len(title)), flush=True)
+        _LOGGER.info("---- %s ----", title)
     else:
         print("-" * 48, flush=True)
+        _LOGGER.info("-" * 48)
 
 
 class SentenceStreamPrinter:
@@ -98,49 +111,47 @@ class SentenceStreamPrinter:
         print(flush=True)
 
 
-class _Tee:
-    """Duplicate every write to ``original`` and ``log_file`` both."""
+def setup_logging(logs_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
+    """Configure the ``voicerecon`` logger to append to a daily file.
 
-    def __init__(self, original: Any, log_file: Any) -> None:
-        self._orig = original
-        self._log = log_file
+    ``<logs_dir>/YYYY-MM-DD.log`` is opened via
+    :class:`TimedRotatingFileHandler` so each calendar day gets its own
+    file with no manual rotation. Existing handlers on ``voicerecon``
+    (the library-default :class:`NullHandler`, or a previous call's
+    handler) are cleared first so tests and re-runs stay clean.
 
-    def write(self, s: str) -> int:
-        n = self._orig.write(s)
-        try:
-            self._log.write(s)
-        except Exception:
-            pass
-        return n
-
-    def flush(self) -> None:
-        try:
-            self._orig.flush()
-        except Exception:
-            pass
-        try:
-            self._log.flush()
-        except Exception:
-            pass
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._orig, name)
-
-
-def tee_to_file(path: Path | str) -> Path:
-    """Tee stdout and stderr to ``path`` for the rest of the process.
-
-    Creates the parent directory if needed. Appends across runs so a
-    single daily file collects every session's output; a session header
-    line marks the boundary.
+    ``level`` defaults to :data:`logging.DEBUG` so streaming diagnostics
+    land in the file; the terminal output is unaffected because
+    :func:`info` / :func:`warn` / :func:`error` write to the terminal
+    directly via ``print`` and only *additionally* emit a log record.
     """
-    resolved = Path(str(path)).expanduser()
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    log_file = open(resolved, "a", encoding="utf-8", buffering=1)
-    log_file.write(
-        f"\n=== session {datetime.now().isoformat(timespec='seconds')} ===\n"
+    resolved_dir = Path(str(logs_dir)).expanduser()
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    log_path = resolved_dir / f"{datetime.now().strftime('%Y-%m-%d')}.log"
+
+    # Clear inherited handlers (NullHandler from module init, or a prior
+    # setup_logging call from tests / re-entry).
+    for handler in list(_LOGGER.handlers):
+        _LOGGER.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    handler = TimedRotatingFileHandler(
+        log_path, when="midnight", encoding="utf-8"
     )
-    log_file.flush()
-    sys.stdout = _Tee(sys.stdout, log_file)
-    sys.stderr = _Tee(sys.stderr, log_file)
-    return resolved
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)-7s] [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    handler.setLevel(level)
+
+    _LOGGER.setLevel(level)
+    _LOGGER.addHandler(handler)
+    # A session-start marker gives grep-able boundaries when a single
+    # day's log spans multiple runs.
+    _LOGGER.info("=== session start ===")
+    return log_path
