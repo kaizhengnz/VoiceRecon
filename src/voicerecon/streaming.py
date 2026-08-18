@@ -32,12 +32,15 @@ DEFAULT_MIN_CHUNK_SECONDS = 1.0
 """Paper's sweet spot on the latency/CPU curve; sub-second thrashes the model
 without much perceptual gain, multi-second erodes the streaming feel."""
 
-MAX_BUFFER_SECONDS = 30.0
-"""Hard cap on the rolling buffer. Whisper's own attention window is 30 s,
-so keeping more audio just wastes memory and slows every pass. If the
-speaker never pauses long enough for VAD ``end`` to fire (e.g. continuous
-30 s+ monologue with no micro-pause), the oldest samples are dropped and
-the local-agreement priming is reset."""
+MAX_BUFFER_SECONDS = 15.0
+"""Hard cap on the rolling buffer. Whisper can attend up to 30 s but every
+extra second of context also scales its per-pass CPU cost linearly, and
+each ``commit_step`` reruns Whisper on the full buffer. 15 s keeps a
+worst-case pass roughly half of Whisper's ceiling — the difference
+between "a few seconds late" and "text arrives after the speaker has
+already stopped" on CPU. If the speaker never pauses long enough for VAD
+``end`` to fire, the oldest samples are dropped and the local-agreement
+priming is reset."""
 
 MAX_PROMPT_WORDS = 60
 """How many trailing committed words to feed back as Whisper's
