@@ -75,7 +75,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     # timestamp instead of scattered by their own creation times.
     session_dir = str(
         Path(cfg["save_dir"]).expanduser()
-        / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        / f"Session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     )
 
     # Structured logging (level DEBUG → session log.txt) captures
