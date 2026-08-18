@@ -1,12 +1,29 @@
 """Terminal output helpers: consistent prefixes and credential masking.
 
 Every credential is masked before it reaches the terminal or a log.
+
+:func:`info` / :func:`warn` / :func:`error` write to the terminal AND
+emit a structured record on the ``voicerecon`` logger, so
+:func:`setup_logging` can attach a rotating daily :class:`FileHandler`
+without any callsite changes. Individual modules use their own
+``logging.getLogger(__name__)`` for internal diagnostics (they do not
+route through here, since those are debug-level and terminal output is
+not desired).
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterable
+from datetime import datetime
+from pathlib import Path
+
+_LOGGER = logging.getLogger("voicerecon")
+# Library default: attach a NullHandler so logging is a no-op until
+# setup_logging() runs (silences "No handlers found" and keeps tests
+# quiet).
+_LOGGER.addHandler(logging.NullHandler())
 
 MASK_KEEP = 8
 """Number of leading characters kept when masking (show first 8 only)."""
@@ -36,22 +53,27 @@ def scrub(text: str, secrets: Iterable[str | None]) -> str:
 
 def info(message: str) -> None:
     print(message, flush=True)
+    _LOGGER.info(message)
 
 
 def warn(message: str) -> None:
     print(f"[warn] {message}", flush=True)
+    _LOGGER.warning(message)
 
 
 def error(message: str) -> None:
     print(f"[error] {message}", file=sys.stderr, flush=True)
+    _LOGGER.error(message)
 
 
 def rule(title: str = "") -> None:
     """Print a separator line, optionally with a title."""
     if title:
         print(f"\n---- {title} " + "-" * max(0, 40 - len(title)), flush=True)
+        _LOGGER.info("---- %s ----", title)
     else:
         print("-" * 48, flush=True)
+        _LOGGER.info("-" * 48)
 
 
 class SentenceStreamPrinter:
@@ -86,3 +108,46 @@ class SentenceStreamPrinter:
             print("".join(self._buffer), end="", flush=True)
             self._buffer = []
         print(flush=True)
+
+
+def setup_logging(session_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
+    """Configure the ``voicerecon`` logger to write ``<session_dir>/log.txt``.
+
+    One log per session — no rotation, no cross-session mixing — so each
+    session directory holds a self-contained set of artifacts
+    (``transcript.txt``, ``<preset>.txt``, ``log.txt``). Existing
+    handlers on ``voicerecon`` (the library-default :class:`NullHandler`
+    or a previous call's handler) are cleared first so tests and
+    re-runs stay clean.
+
+    ``level`` defaults to :data:`logging.DEBUG` so streaming diagnostics
+    land in the file; the terminal output is unaffected because
+    :func:`info` / :func:`warn` / :func:`error` write to the terminal
+    directly via ``print`` and only *additionally* emit a log record.
+    """
+    resolved_dir = Path(str(session_dir)).expanduser()
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    log_path = resolved_dir / "log.txt"
+
+    # Clear inherited handlers (NullHandler from module init, or a prior
+    # setup_logging call from tests / re-entry).
+    for handler in list(_LOGGER.handlers):
+        _LOGGER.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)-7s] [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    handler.setLevel(level)
+
+    _LOGGER.setLevel(level)
+    _LOGGER.addHandler(handler)
+    _LOGGER.info("=== session start %s ===", datetime.now().isoformat(timespec="seconds"))
+    return log_path

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -68,6 +70,21 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
+    # One directory per session; transcript, summary, and log.txt all land
+    # inside it so a session's artifacts stay together with a shared
+    # timestamp instead of scattered by their own creation times.
+    session_dir = str(
+        Path(cfg["save_dir"]).expanduser()
+        / f"Session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
+
+    # Structured logging (level DEBUG → session log.txt) captures
+    # info/warn/error alongside per-module diagnostics like the streaming
+    # pipeline's pump / commit / force-flush trail, so a slow or wedged
+    # session leaves enough on disk to be analysed after the fact.
+    log_path = ui.setup_logging(session_dir)
+    ui.info(f"Logging to {log_path}")
+
     # soundcard prints one of these on every buffer glitch on Windows loopback;
     # they interleave with transcript / AI output and are almost always harmless
     # (the VAD absorbs the missed samples). Filter by warning class — a
@@ -83,7 +100,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     if hint:
         ui.warn(hint)
 
-    writer = transcript.TranscriptWriter(str(cfg["save_dir"]))
+    writer = transcript.TranscriptWriter(session_dir)
 
     # Both streamers share one WhisperModel — sharing is safe because
     # commit_step / finalize only run on the main thread, so the model
@@ -98,7 +115,7 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         return shared_model
 
     streamers: dict[str, streaming.StreamingTranscriber] = {
-        speaker: streaming.StreamingTranscriber(_model_factory)
+        speaker: streaming.StreamingTranscriber(_model_factory, label=speaker)
         for speaker in ("me", "them")
     }
     accumulated: dict[str, list[str]] = {"me": [], "them": []}
@@ -133,10 +150,17 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         callback=_loop_callback,
     )
 
+    # Preload Whisper synchronously so the first commit_step doesn't pay the
+    # CTranslate2 init + weights load on the audio critical path — that would
+    # otherwise stall the streaming pipeline and, if the user Ctrl+C's before
+    # the first pass returns, freeze the shutdown flush too.
+    ui.info(f"Loading Whisper ({model_size})…")
+    _model_factory()
+
     ui.rule("VoiceRecon listening")
     ui.info(f"Save directory: {cfg['save_dir']}")
     ui.info(f"Silence threshold: {cfg['speech_silence_seconds']}s")
-    ui.info(f"Whisper model: {model_size} (loads on first speech)")
+    ui.info(f"Whisper model: {model_size}")
     if preset is None:
         ui.info("Mode: transcript only (no AI, no Telegram).")
     else:
@@ -156,7 +180,8 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
         if not chunk:
             return
         if not accumulated[speaker]:
-            print(f"[{speaker}]", end="", flush=True)
+            print(f"[{speaker}] ", end="", flush=True)
+            chunk = chunk.lstrip()
         print(chunk, end="", flush=True)
         accumulated[speaker].append(chunk)
 
@@ -184,10 +209,11 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     except KeyboardInterrupt:
         ui.info("\nStopping…")
     finally:
+        ui.info("Finalizing…")
         for item in seg.flush(time.monotonic()):
             _flush_boundary(item)
         if preset is not None and preset.is_batch:
-            summary.render_and_deliver(cfg, preset, history)
+            summary.render_and_deliver(cfg, preset, history, session_dir)
         if writer.path is not None:
             ui.info(f"Transcript saved to {writer.path}")
         ui.info("VoiceRecon stopped.")

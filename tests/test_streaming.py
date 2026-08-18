@@ -11,6 +11,11 @@ from voicerecon import streaming
 
 @dataclass
 class FakeWord:
+    """Author-friendly hypothesis unit. ScriptedModel folds a list of
+    these into a single FakeSegment before returning it, mirroring the
+    ``segment.text`` / ``segment.start`` / ``segment.end`` shape
+    ``StreamingTranscriber`` now expects."""
+
     word: str
     start: float
     end: float
@@ -18,28 +23,46 @@ class FakeWord:
 
 @dataclass
 class FakeSegment:
-    words: list[FakeWord]
+    text: str
+    start: float
+    end: float
 
 
 class ScriptedModel:
     """Returns the next scripted hypothesis on each ``transcribe`` call.
 
     The buffer's actual samples are ignored — tests set the hypothesis
-    sequence directly. Word ``end`` times are used by
-    :class:`StreamingTranscriber` to trim the buffer, so they must be
-    consistent with the samples the test pushes.
+    sequence directly as a list of :class:`FakeWord`; the model wraps
+    it into one :class:`FakeSegment` per call whose ``text`` /
+    ``start`` / ``end`` line up with those words (so
+    :meth:`StreamingTranscriber._transcribe_words` interpolates back
+    the same per-word timings the test wrote).
     """
 
     def __init__(self, hypotheses: list[list[FakeWord]]):
         self._hypotheses = list(hypotheses)
         self.calls: list[int] = []
+        self.prompts: list[str | None] = []
 
-    def transcribe(self, audio, language=None, vad_filter=False, word_timestamps=True):
+    def transcribe(
+        self,
+        audio,
+        language=None,
+        vad_filter=False,
+        initial_prompt=None,
+    ):
         self.calls.append(int(audio.size))
+        self.prompts.append(initial_prompt)
         if not self._hypotheses:
-            return iter([FakeSegment(words=[])]), None
+            return iter([FakeSegment(text="", start=0.0, end=0.0)]), None
         hyp = self._hypotheses.pop(0)
-        return iter([FakeSegment(words=list(hyp))]), None
+        if not hyp:
+            return iter([FakeSegment(text="", start=0.0, end=0.0)]), None
+        text = "".join(w.word for w in hyp)
+        return (
+            iter([FakeSegment(text=text, start=hyp[0].start, end=hyp[-1].end)]),
+            None,
+        )
 
 
 def _seconds(n: float) -> np.ndarray:
@@ -172,18 +195,94 @@ def test_backend_failure_returns_empty_without_advancing_state():
     assert st.finalize() == ""
 
 
-def test_feed_caps_buffer_at_max_seconds_and_resets_priming():
-    """Non-stop audio without a VAD end must not grow the buffer unbounded."""
-    hyp = [FakeWord(" a", 0.0, 0.5)]
-    st = _st([hyp, hyp])
+def test_commit_step_force_flushes_when_buffer_hits_cap():
+    """Continuous speech that grows the buffer past MAX_BUFFER_SECONDS
+    without LocalAgreement converging is emitted as a whole-hypothesis
+    commit — the trade the streamer makes for responsiveness during
+    long turns with no VAD end. The alternative (front-trimming the
+    buffer, as an earlier revision did) destroyed the LocalAgreement
+    invariant and starved the pipeline of any output at all."""
+    # Hypotheses disagree so LocalAgreement never fires; without the
+    # force-flush branch nothing would ever be committed.
+    hyp1 = [FakeWord(" alpha", 0.0, 1.0)]
+    hyp2 = [
+        FakeWord(" beta", 0.0, 1.0),
+        FakeWord(" gamma", 1.0, 3.0),
+        FakeWord(" delta", 3.0, 5.0),
+    ]
+    st = _st([hyp1, hyp2])
     st.feed(_seconds(1.5))
-    st.commit_step()  # priming — prev_words populated
-    # Now dump 40s of audio in one shot — well past MAX_BUFFER_SECONDS.
-    st.feed(_seconds(40))
-    # Buffer capped and priming reset, so the next commit_step needs
-    # another priming pass rather than immediately committing.
-    st.feed(_seconds(0.1))
-    assert st.commit_step() == ""
+    st.commit_step()  # primes with hyp1
+    st.feed(_seconds(4.0))  # buffer is now 5.5 s, past the 5 s cap
+    assert st.commit_step() == " beta gamma delta"
+
+
+def test_force_flush_preserves_audio_added_during_the_pass():
+    """Audio that ``feed()`` appends while Whisper is running on the
+    force-flush snapshot is not discarded — it survives into the next
+    pass so continuous speech is not silently dropped at the boundary."""
+    hyp = [FakeWord(" x", 0.0, 5.0)]
+    model = ScriptedModel([hyp])
+    st = streaming.StreamingTranscriber(lambda: model, min_chunk_seconds=1.0)
+    # Trip the force-flush branch on the first pump.
+    st.feed(_seconds(5.5))
+
+    # Fake the "audio arrived during Whisper" case by adding samples
+    # after ScriptedModel.transcribe has been queued but before the
+    # commit_step's trim block re-enters the lock. The scripted model
+    # is synchronous, so we simulate the same effect by patching feed
+    # in between: easiest is to intercept transcribe.
+    real_transcribe = model.transcribe
+
+    def transcribe_and_extend(audio, **kwargs):
+        # Push 1 s of new audio while "Whisper is running".
+        st.feed(_seconds(1.0))
+        return real_transcribe(audio, **kwargs)
+
+    model.transcribe = transcribe_and_extend
+
+    st.commit_step()  # force-flush; should keep the 1 s that arrived mid-pass
+
+    # Buffer now holds only the 1 s that was added mid-pass.
+    assert st._buffer.size == streaming.SAMPLE_RATE
+
+
+def test_prefix_comparison_tolerates_case_drift():
+    """Whisper's decoding shifts capitalisation across passes on the
+    same audio (e.g. ``The`` vs ``the`` for the first word of a
+    segment); a byte-exact compare would defeat agreement on real
+    speech, so the check normalises before comparing."""
+    hyp1 = [FakeWord(" the", 0.0, 0.3), FakeWord(" Terraform", 0.3, 0.9)]
+    hyp2 = [FakeWord(" The", 0.0, 0.3), FakeWord(" terraform", 0.3, 0.9)]
+    st = _st([hyp1, hyp2])
+    st.feed(_seconds(1.5))
+    st.commit_step()  # priming
+    st.feed(_seconds(0.5))
+    committed = st.commit_step()
+    # Both words agree after strip + lower even though hyp2 differs in
+    # capitalisation, so the whole prefix is emitted with hyp2's shape.
+    assert committed.strip().lower() == "the terraform"
+    assert committed == " The terraform"
+
+
+def test_committed_text_is_fed_back_as_initial_prompt():
+    """The just-committed words go to Whisper as ``initial_prompt`` on the
+    next pass so the decoder produces consistent tokenisation for the
+    fresh audio (the standard whisper-streaming stabiliser)."""
+    hyp1 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    hyp2 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    hyp3 = [FakeWord(" hello", 0.0, 0.4), FakeWord(" world", 0.4, 0.8)]
+    model = ScriptedModel([hyp1, hyp2, hyp3])
+    st = streaming.StreamingTranscriber(lambda: model, min_chunk_seconds=1.0)
+    st.feed(_seconds(1.5))
+    st.commit_step()  # priming; no prompt yet
+    st.feed(_seconds(0.5))
+    st.commit_step()  # commits " hello world"; still no prompt in flight
+    st.feed(_seconds(1.0))
+    st.commit_step()  # third pass sees committed text as initial_prompt
+    assert model.prompts[0] is None
+    assert model.prompts[1] is None
+    assert model.prompts[2] == "hello world"
 
 
 def test_model_loaded_lazily_on_first_transcribe():
