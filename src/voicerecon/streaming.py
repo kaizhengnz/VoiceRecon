@@ -25,11 +25,26 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _Word:
+    """Word-like record built from a Whisper segment when the model was
+    asked for segment-level timing only. ``end`` is the interpolated
+    proportional position of this token inside its segment; precise
+    enough for LocalAgreement's buffer trim without paying the DTW
+    alignment cost that ``word_timestamps=True`` would add on top of
+    each Whisper pass."""
+
+    word: str
+    start: float
+    end: float
 
 SAMPLE_RATE = 16000
 DEFAULT_MIN_CHUNK_SECONDS = 1.0
@@ -199,17 +214,35 @@ class StreamingTranscriber:
     def _transcribe_words(self, audio: np.ndarray, *, prompt: str = "") -> list[Any]:
         try:
             model = self._ensure_model()
+            # word_timestamps=True forces a DTW alignment pass on every
+            # transcribe call — on CPU (especially under AMD64 emulation
+            # on Windows-on-ARM) that can double or triple the wall-time
+            # cost of an already-slow Whisper pass. Ask only for segments
+            # and derive per-word start/end by proportional interpolation
+            # inside the segment; the trim boundary is a bit coarser but
+            # LocalAgreement's word-level compare still works.
             segments, _ = model.transcribe(
                 audio,
                 language=None,
                 vad_filter=False,
-                word_timestamps=True,
                 initial_prompt=prompt or None,
             )
             out: list[Any] = []
             for segment in segments:
-                for word in getattr(segment, "words", None) or ():
-                    out.append(word)
+                tokens = segment.text.split()
+                if not tokens:
+                    continue
+                seg_start = float(segment.start)
+                seg_end = float(segment.end)
+                per_word = (seg_end - seg_start) / len(tokens)
+                for index, tok in enumerate(tokens):
+                    out.append(
+                        _Word(
+                            word=f" {tok}",
+                            start=seg_start + index * per_word,
+                            end=seg_start + (index + 1) * per_word,
+                        )
+                    )
             return out
         except Exception:
             return []

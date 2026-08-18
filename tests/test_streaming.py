@@ -11,6 +11,11 @@ from voicerecon import streaming
 
 @dataclass
 class FakeWord:
+    """Author-friendly hypothesis unit. ScriptedModel folds a list of
+    these into a single FakeSegment before returning it, mirroring the
+    ``segment.text`` / ``segment.start`` / ``segment.end`` shape
+    ``StreamingTranscriber`` now expects."""
+
     word: str
     start: float
     end: float
@@ -18,16 +23,20 @@ class FakeWord:
 
 @dataclass
 class FakeSegment:
-    words: list[FakeWord]
+    text: str
+    start: float
+    end: float
 
 
 class ScriptedModel:
     """Returns the next scripted hypothesis on each ``transcribe`` call.
 
     The buffer's actual samples are ignored — tests set the hypothesis
-    sequence directly. Word ``end`` times are used by
-    :class:`StreamingTranscriber` to trim the buffer, so they must be
-    consistent with the samples the test pushes.
+    sequence directly as a list of :class:`FakeWord`; the model wraps
+    it into one :class:`FakeSegment` per call whose ``text`` /
+    ``start`` / ``end`` line up with those words (so
+    :meth:`StreamingTranscriber._transcribe_words` interpolates back
+    the same per-word timings the test wrote).
     """
 
     def __init__(self, hypotheses: list[list[FakeWord]]):
@@ -40,15 +49,20 @@ class ScriptedModel:
         audio,
         language=None,
         vad_filter=False,
-        word_timestamps=True,
         initial_prompt=None,
     ):
         self.calls.append(int(audio.size))
         self.prompts.append(initial_prompt)
         if not self._hypotheses:
-            return iter([FakeSegment(words=[])]), None
+            return iter([FakeSegment(text="", start=0.0, end=0.0)]), None
         hyp = self._hypotheses.pop(0)
-        return iter([FakeSegment(words=list(hyp))]), None
+        if not hyp:
+            return iter([FakeSegment(text="", start=0.0, end=0.0)]), None
+        text = "".join(w.word for w in hyp)
+        return (
+            iter([FakeSegment(text=text, start=hyp[0].start, end=hyp[-1].end)]),
+            None,
+        )
 
 
 def _seconds(n: float) -> np.ndarray:
@@ -233,22 +247,22 @@ def test_force_flush_preserves_audio_added_during_the_pass():
     assert st._buffer.size == streaming.SAMPLE_RATE
 
 
-def test_prefix_comparison_tolerates_leading_space_and_case_drift():
-    """Whisper's tokenisation shifts between passes (leading space,
-    capitalisation) on the same audio; a byte-exact compare would defeat
-    agreement on real speech, so the check normalises before comparing.
-    The current pass's formatting is emitted as-is."""
+def test_prefix_comparison_tolerates_case_drift():
+    """Whisper's decoding shifts capitalisation across passes on the
+    same audio (e.g. ``The`` vs ``the`` for the first word of a
+    segment); a byte-exact compare would defeat agreement on real
+    speech, so the check normalises before comparing."""
     hyp1 = [FakeWord(" the", 0.0, 0.3), FakeWord(" Terraform", 0.3, 0.9)]
-    hyp2 = [FakeWord("The", 0.0, 0.3), FakeWord(" terraform", 0.3, 0.9)]
+    hyp2 = [FakeWord(" The", 0.0, 0.3), FakeWord(" terraform", 0.3, 0.9)]
     st = _st([hyp1, hyp2])
     st.feed(_seconds(1.5))
     st.commit_step()  # priming
     st.feed(_seconds(0.5))
     committed = st.commit_step()
     # Both words agree after strip + lower even though hyp2 differs in
-    # leading-space and capitalisation, so the whole prefix is emitted.
+    # capitalisation, so the whole prefix is emitted with hyp2's shape.
     assert committed.strip().lower() == "the terraform"
-    assert committed == "The terraform"
+    assert committed == " The terraform"
 
 
 def test_committed_text_is_fed_back_as_initial_prompt():

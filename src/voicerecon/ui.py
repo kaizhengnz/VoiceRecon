@@ -17,7 +17,6 @@ import logging
 import sys
 from collections.abc import Iterable
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 _LOGGER = logging.getLogger("voicerecon")
@@ -111,23 +110,24 @@ class SentenceStreamPrinter:
         print(flush=True)
 
 
-def setup_logging(logs_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
-    """Configure the ``voicerecon`` logger to append to a daily file.
+def setup_logging(session_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
+    """Configure the ``voicerecon`` logger to write ``<session_dir>/log.txt``.
 
-    ``<logs_dir>/YYYY-MM-DD.log`` is opened via
-    :class:`TimedRotatingFileHandler` so each calendar day gets its own
-    file with no manual rotation. Existing handlers on ``voicerecon``
-    (the library-default :class:`NullHandler`, or a previous call's
-    handler) are cleared first so tests and re-runs stay clean.
+    One log per session — no rotation, no cross-session mixing — so each
+    session directory holds a self-contained set of artifacts
+    (``transcript.txt``, ``<preset>.txt``, ``log.txt``). Existing
+    handlers on ``voicerecon`` (the library-default :class:`NullHandler`
+    or a previous call's handler) are cleared first so tests and
+    re-runs stay clean.
 
     ``level`` defaults to :data:`logging.DEBUG` so streaming diagnostics
     land in the file; the terminal output is unaffected because
     :func:`info` / :func:`warn` / :func:`error` write to the terminal
     directly via ``print`` and only *additionally* emit a log record.
     """
-    resolved_dir = Path(str(logs_dir)).expanduser()
+    resolved_dir = Path(str(session_dir)).expanduser()
     resolved_dir.mkdir(parents=True, exist_ok=True)
-    log_path = resolved_dir / f"{datetime.now().strftime('%Y-%m-%d')}.log"
+    log_path = resolved_dir / "log.txt"
 
     # Clear inherited handlers (NullHandler from module init, or a prior
     # setup_logging call from tests / re-entry).
@@ -138,9 +138,7 @@ def setup_logging(logs_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
         except Exception:
             pass
 
-    handler = TimedRotatingFileHandler(
-        log_path, when="midnight", encoding="utf-8"
-    )
+    handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter(
             "%(asctime)s [%(levelname)-7s] [%(name)s] %(message)s",
@@ -151,7 +149,5 @@ def setup_logging(logs_dir: Path | str, *, level: int = logging.DEBUG) -> Path:
 
     _LOGGER.setLevel(level)
     _LOGGER.addHandler(handler)
-    # A session-start marker gives grep-able boundaries when a single
-    # day's log spans multiple runs.
-    _LOGGER.info("=== session start ===")
+    _LOGGER.info("=== session start %s ===", datetime.now().isoformat(timespec="seconds"))
     return log_path

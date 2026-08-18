@@ -70,11 +70,19 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     """Run the listen loop. Returns the process exit code."""
     from . import platform_check
 
-    # Structured logging (level DEBUG → daily rotating file) captures
+    # One directory per session; transcript, summary, and log.txt all land
+    # inside it so a session's artifacts stay together with a shared
+    # timestamp instead of scattered by their own creation times.
+    session_dir = str(
+        Path(cfg["save_dir"]).expanduser()
+        / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    )
+
+    # Structured logging (level DEBUG → session log.txt) captures
     # info/warn/error alongside per-module diagnostics like the streaming
     # pipeline's pump / commit / force-flush trail, so a slow or wedged
     # session leaves enough on disk to be analysed after the fact.
-    log_path = ui.setup_logging(Path(cfg["save_dir"]).expanduser() / "logs")
+    log_path = ui.setup_logging(session_dir)
     ui.info(f"Logging to {log_path}")
 
     # soundcard prints one of these on every buffer glitch on Windows loopback;
@@ -92,12 +100,6 @@ def run(cfg: Mapping[str, Any], preset: presets.Preset | None) -> int:
     if hint:
         ui.warn(hint)
 
-    # One directory per session so transcript, summary, and any future
-    # per-session artifact land together with a shared timestamp instead
-    # of scattered by their own creation times.
-    session_dir = str(
-        Path(cfg["save_dir"]) / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    )
     writer = transcript.TranscriptWriter(session_dir)
 
     # Both streamers share one WhisperModel — sharing is safe because
